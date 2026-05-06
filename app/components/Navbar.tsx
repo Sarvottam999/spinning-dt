@@ -8,6 +8,7 @@ const navItems = [
   { href: "/viscose", label: "Viscose" },
   { href: "/auxilary-recovery", label: "Auxilary&Recovery" },
   { href: "/acid-plant", label: "Acid Plant" },
+  { href: "/cs2", label: "CS2" },
 ];
 
 export default function Navbar() {
