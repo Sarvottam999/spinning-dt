@@ -59,13 +59,19 @@ const [lossCapacity, setLossCapacity] = useState<string[]>([]);
       d.getMonth() + 1
     ).padStart(2, "0")}/${d.getFullYear()}`;
   }
-
+  const toTitleCase = (text: string) => {
+    return text
+      ?.toLowerCase()
+      .split(" ")
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(" ");
+  };
   function formatCell(row: RowData) {
     const date = formatExcelDate(row["Date"]);
     const dt = row["Total Down Time(Hrs)"];
     const sub = row["Sub Head reason"];
     const loss = row["Loss Capacity"];
-    return `${date} (${dt} Hrs.) – ${sub} – ${loss} T `;
+    return `${date} (${dt} Hrs.) – ${toTitleCase(sub)} (${loss} T) `;
   }
 
   // Unique options for dropdowns
@@ -562,7 +568,7 @@ if (lossCapacity.length && !lossCapacity.includes(String(row["Loss Capacity"])))
         {columns.map(col => (
           <td key={col} style={{ border: "1px solid #ddd", padding: "6px 12px", verticalAlign: "top" }}>
             {row?.[col]?.map((item: string, i: number) => (
-              <div key={i} style={{ marginBottom: 2, fontWeight: i === 0 ? "600" : "normal" }}>{item}</div>
+              <div key={i} style={{ marginBottom: 2 }}>{item}</div>
             ))}
           </td>
         ))}
