@@ -7,6 +7,13 @@ type CellValue = string | number | boolean | Date | null | undefined;
 type RowData = Record<string, CellValue>;
 type TableData = Record<string, Record<string, string[]>>;
 type SummaryRow = Record<string, number>;
+type FilterName =
+  | "headReason"
+  | "section"
+  | "subHeadReason"
+  | "reasonDesc"
+  | "line"
+  | "unit";
 
 type ExcelUploaderProps = {
   title?: string;
@@ -95,6 +102,12 @@ function getStringOptions(rows: RowData[], key: string) {
   return [
     ...new Set(rows.map((row) => row[key]).filter(Boolean).map(String)),
   ].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+}
+
+function mergeStringOptions(options: string[], selected: string[]) {
+  return [...new Set([...options, ...selected])].sort((a, b) =>
+    a.localeCompare(b, undefined, { numeric: true })
+  );
 }
 
 function sortLineKeys(keys: string[]) {
@@ -223,68 +236,53 @@ export default function ExcelUploader({
   const [lineFilter, setLineFilter] = useState<string[]>([]);
   const [unitFilter, setUnitFilter] = useState<string[]>([]);
 
-  const headReasonOptions = useMemo(
-    () => getStringOptions(rawRows, "Head reason"),
-    [rawRows]
-  );
-  const sectionOptions = useMemo(
-    () => getStringOptions(rawRows, "Section"),
-    [rawRows]
-  );
-  const subHeadOptions = useMemo(
-    () => getStringOptions(rawRows, "Sub Head reason"),
-    [rawRows]
-  );
-  const reasonDescOptions = useMemo(
-    () => getStringOptions(rawRows, "Reason Desc"),
-    [rawRows]
-  );
-  const lineOptions = useMemo(() => {
-    const lines = rawRows
-      .map((row) => getPlantAndLine(row["Functional Location"], extractLine).line)
-      .filter(Boolean);
-
-    return sortLineKeys([...new Set(lines)]);
-  }, [rawRows, extractLine]);
-  const unitOptions = useMemo(() => {
-    const units = rawRows
-      .map((row) => {
-        const { plant } = getPlantAndLine(row["Functional Location"], extractLine);
-        return mapPlantToUnit(plant);
-      })
-      .filter((unit): unit is string => Boolean(unit));
-
-    return columns.filter((column) => units.includes(column));
-  }, [rawRows, extractLine]);
-  const visibleColumns = unitFilter.length
-    ? columns.filter((column) => unitFilter.includes(column))
-    : columns;
-
-  const filteredRows = useMemo(() => {
-    return rawRows.filter((row) => {
+  const {
+    filteredRows,
+    headReasonOptions,
+    sectionOptions,
+    subHeadOptions,
+    reasonDescOptions,
+    lineOptions,
+    unitOptions,
+  } = useMemo(() => {
+    const matchesFilters = (row: RowData, ignoredFilters: FilterName[] = []) => {
       const { plant, line } = getPlantAndLine(row["Functional Location"], extractLine);
       const unit = mapPlantToUnit(plant);
 
-      if (lineFilter.length && !lineFilter.includes(line)) {
-        return false;
-      }
-
-      if (unitFilter.length && (!unit || !unitFilter.includes(unit))) {
+      if (
+        !ignoredFilters.includes("line") &&
+        lineFilter.length &&
+        !lineFilter.includes(line)
+      ) {
         return false;
       }
 
       if (
+        !ignoredFilters.includes("unit") &&
+        unitFilter.length &&
+        (!unit || !unitFilter.includes(unit))
+      ) {
+        return false;
+      }
+
+      if (
+        !ignoredFilters.includes("headReason") &&
         headReason.length &&
         !headReason.includes(String(row["Head reason"] || ""))
       ) {
         return false;
       }
 
-      if (section.length && !section.includes(String(row["Section"] || ""))) {
+      if (
+        !ignoredFilters.includes("section") &&
+        section.length &&
+        !section.includes(String(row["Section"] || ""))
+      ) {
         return false;
       }
 
       if (
+        !ignoredFilters.includes("subHeadReason") &&
         subHeadReason.length &&
         !subHeadReason.includes(String(row["Sub Head reason"] || ""))
       ) {
@@ -292,6 +290,7 @@ export default function ExcelUploader({
       }
 
       if (
+        !ignoredFilters.includes("reasonDesc") &&
         reasonDesc.length &&
         !reasonDesc.includes(String(row["Reason Desc"] || ""))
       ) {
@@ -306,7 +305,53 @@ export default function ExcelUploader({
       }
 
       return true;
-    });
+    };
+
+    const getRowsForOptions = (ignoredFilters: FilterName[]) =>
+      rawRows.filter((row) => matchesFilters(row, ignoredFilters));
+
+    const getLineOptions = (rows: RowData[]) => {
+      const lines = rows
+        .map((row) => getPlantAndLine(row["Functional Location"], extractLine).line)
+        .filter(Boolean);
+
+      return sortLineKeys([...new Set([...lines, ...lineFilter])]);
+    };
+
+    const getUnitOptions = (rows: RowData[]) => {
+      const units = rows
+        .map((row) => {
+          const { plant } = getPlantAndLine(row["Functional Location"], extractLine);
+          return mapPlantToUnit(plant);
+        })
+        .filter((unit): unit is string => Boolean(unit));
+
+      return columns.filter(
+        (column) => units.includes(column) || unitFilter.includes(column)
+      );
+    };
+
+    return {
+      filteredRows: rawRows.filter((row) => matchesFilters(row)),
+      headReasonOptions: mergeStringOptions(
+        getStringOptions(getRowsForOptions(["headReason"]), "Head reason"),
+        headReason
+      ),
+      sectionOptions: mergeStringOptions(
+        getStringOptions(getRowsForOptions(["section"]), "Section"),
+        section
+      ),
+      subHeadOptions: mergeStringOptions(
+        getStringOptions(getRowsForOptions(["subHeadReason"]), "Sub Head reason"),
+        subHeadReason
+      ),
+      reasonDescOptions: mergeStringOptions(
+        getStringOptions(getRowsForOptions(["reasonDesc"]), "Reason Desc"),
+        reasonDesc
+      ),
+      lineOptions: getLineOptions(getRowsForOptions(["line"])),
+      unitOptions: getUnitOptions(getRowsForOptions(["unit"])),
+    };
   }, [
     rawRows,
     extractLine,
@@ -319,6 +364,9 @@ export default function ExcelUploader({
     dateFrom,
     dateTo,
   ]);
+  const visibleColumns = unitFilter.length
+    ? columns.filter((column) => unitFilter.includes(column))
+    : columns;
 
   const tableData = useMemo(() => {
     const result: TableData = {};
