@@ -65,7 +65,7 @@ const [lossCapacity, setLossCapacity] = useState<string[]>([]);
     const dt = row["Total Down Time(Hrs)"];
     const sub = row["Sub Head reason"];
     const loss = row["Loss Capacity"];
-    return `${date} (${dt}) – ${sub} – ${loss}`;
+    return `${date} (${dt} Hrs.) – ${sub} – ${loss} T `;
   }
 
   // Unique options for dropdowns
