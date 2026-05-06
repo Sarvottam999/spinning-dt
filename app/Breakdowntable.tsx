@@ -545,47 +545,31 @@ if (lossCapacity.length && !lossCapacity.includes(String(row["Loss Capacity"])))
                   </tr>
                 </thead>
                 <tbody>
-                  {Object.entries(tableData).map(([line, row]: any, idx) => (
-                    <tr
-                      key={line}
-                      style={{
-                        background: idx % 2 === 0 ? "white" : "#fdf6f5",
-                      }}
-                    >
-                      <td
-                        style={{
-                          border: "1px solid #ddd",
-                          padding: "6px 12px",
-                          fontWeight: "bold",
-                          color: "#333",
-                        }}
-                      >
-                        {line}
-                      </td>
-                      {columns.map((col) => (
-                        <td
-                          key={col}
-                          style={{
-                            border: "1px solid #ddd",
-                            padding: "6px 12px",
-                            verticalAlign: "top",
-                          }}
-                        >
-                          {row[col]?.map((item: string, i: number) => (
-                            <div
-                              key={i}
-                              style={{
-                                marginBottom: 2,
-                                fontWeight: i === 0 ? "600" : "normal",
-                              }}
-                            >
-                              {item}
-                            </div>
-                          ))}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
+                {(() => {
+  const maxLine = Math.max(
+    ...Object.keys(tableData).map(l => parseInt(l.replace(/\D/g, "")) || 0)
+  );
+  return Array.from({ length: maxLine }, (_, i) => {
+    const line = `L0${i + 1}`.replace("L0", i + 1 < 10 ? "L0" : "L");
+    // fix: proper formatting
+    const lineKey = `L${String(i + 1).padStart(2, "0")}`;
+    const row = tableData[lineKey];
+    return (
+      <tr key={lineKey} style={{ background: i % 2 === 0 ? "white" : "#fdf6f5" }}>
+        <td style={{ border: "1px solid #ddd", padding: "6px 12px", fontWeight: "bold", color: "#333" }}>
+          {lineKey}
+        </td>
+        {columns.map(col => (
+          <td key={col} style={{ border: "1px solid #ddd", padding: "6px 12px", verticalAlign: "top" }}>
+            {row?.[col]?.map((item: string, i: number) => (
+              <div key={i} style={{ marginBottom: 2, fontWeight: i === 0 ? "600" : "normal" }}>{item}</div>
+            ))}
+          </td>
+        ))}
+      </tr>
+    );
+  });
+})()}
 
                   {/* DT Frequency row */}
                   <tr style={{ background: "#f0d6f5", fontWeight: "bold" }}>
