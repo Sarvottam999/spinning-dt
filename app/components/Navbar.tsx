@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 const navItems = [
   { href: "/breakdown", label: "Spinning" },
   { href: "/viscose", label: "Viscose" },
+  { href: "/auxilary-recovery", label: "Auxilary&Recovery" },
 ];
 
 export default function Navbar() {
