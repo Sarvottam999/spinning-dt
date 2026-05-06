@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const navItems = [
-  { href: "/breakdown", label: "Breakdown" },
+  { href: "/breakdown", label: "Spinning" },
   { href: "/viscose", label: "Viscose" },
 ];
 
@@ -32,7 +32,7 @@ export default function Navbar() {
           letterSpacing: 0,
         }}
       >
-        Spinning DT
+        Birla
       </Link>
 
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>

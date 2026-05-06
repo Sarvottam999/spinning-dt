@@ -206,7 +206,7 @@ function MultiCheckDropdown({
 }
 
 export default function ExcelUploader({
-  title = "Breakdown Analysis",
+  title = "Spinning Analysis",
   reportName = "breakdown",
   extractLine = extractBreakdownLine,
   lineMode = "sequential",

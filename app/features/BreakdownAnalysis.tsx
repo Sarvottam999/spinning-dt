@@ -3,5 +3,5 @@
 import ExcelUploader from "../Breakdowntable";
 
 export default function BreakdownAnalysis() {
-  return <ExcelUploader title="Breakdown Analysis" reportName="breakdown" />;
+  return <ExcelUploader title="Spinning Analysis" reportName="breakdown" />;
 }
