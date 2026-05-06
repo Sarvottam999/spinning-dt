@@ -32,11 +32,11 @@ const [lossCapacity, setLossCapacity] = useState<string[]>([]);
     const map: Record<string, string> = {
       "1101": "NGD",
       "1201": "BCK",
-      "2101": "HRR",
-      "3101": "VIL-1",
-      "3201": "VIL-2",
-      "4101": "IBR",
-      "5101": "TRC",
+      "1301": "HRR",
+      "1601": "VIL-1",
+      "1602": "VIL-2",
+      "2111": "IBR",
+      "4101": "TRC",
     };
     return map[plant] || null;
   }
