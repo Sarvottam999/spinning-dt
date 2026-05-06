@@ -35,7 +35,7 @@ export default function Navbar() {
           letterSpacing: 0,
         }}
       >
-        Birla
+        
       </Link>
 
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>

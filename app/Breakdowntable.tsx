@@ -219,6 +219,7 @@ export default function ExcelUploader({
   const [headReason, setHeadReason] = useState<string[]>([]);
   const [section, setSection] = useState<string[]>([]);
   const [subHeadReason, setSubHeadReason] = useState<string[]>([]);
+  const [reasonDesc, setReasonDesc] = useState<string[]>([]);
   const [lineFilter, setLineFilter] = useState<string[]>([]);
   const [unitFilter, setUnitFilter] = useState<string[]>([]);
 
@@ -232,6 +233,10 @@ export default function ExcelUploader({
   );
   const subHeadOptions = useMemo(
     () => getStringOptions(rawRows, "Sub Head reason"),
+    [rawRows]
+  );
+  const reasonDescOptions = useMemo(
+    () => getStringOptions(rawRows, "Reason Desc"),
     [rawRows]
   );
   const lineOptions = useMemo(() => {
@@ -286,6 +291,13 @@ export default function ExcelUploader({
         return false;
       }
 
+      if (
+        reasonDesc.length &&
+        !reasonDesc.includes(String(row["Reason Desc"] || ""))
+      ) {
+        return false;
+      }
+
       if (dateFrom || dateTo) {
         const date = parseExcelDate(row["Date"]);
         if (!date) return false;
@@ -303,6 +315,7 @@ export default function ExcelUploader({
     headReason,
     section,
     subHeadReason,
+    reasonDesc,
     dateFrom,
     dateTo,
   ]);
@@ -370,6 +383,7 @@ export default function ExcelUploader({
     setHeadReason([]);
     setSection([]);
     setSubHeadReason([]);
+    setReasonDesc([]);
     setLineFilter([]);
     setUnitFilter([]);
     setDateFrom("");
@@ -571,6 +585,12 @@ export default function ExcelUploader({
                 options={subHeadOptions}
                 selected={subHeadReason}
                 onChange={setSubHeadReason}
+              />
+              <MultiCheckDropdown
+                label="Reason Desc"
+                options={reasonDescOptions}
+                selected={reasonDesc}
+                onChange={setReasonDesc}
               />
               <MultiCheckDropdown
                 label="Line"
