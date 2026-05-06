@@ -1,9 +1,5 @@
-"use client"
-import Image from "next/image";
-import ExcelUploader from "./Breakdowntable";
+import BreakdownAnalysis from "./features/BreakdownAnalysis";
 
 export default function Home() {
-  return (
-    <ExcelUploader/>
-  );
+  return <BreakdownAnalysis />;
 }
