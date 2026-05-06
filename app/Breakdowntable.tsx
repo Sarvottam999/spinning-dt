@@ -12,6 +12,7 @@ type ExcelUploaderProps = {
   title?: string;
   reportName?: string;
   extractLine?: (functionalLocation: string) => string;
+  lineDetails?: Record<string, string[]>;
   lineMode?: "sequential" | "actual";
 };
 
@@ -209,6 +210,7 @@ export default function ExcelUploader({
   title = "Spinning Analysis",
   reportName = "breakdown",
   extractLine = extractBreakdownLine,
+  lineDetails = {},
   lineMode = "sequential",
 }: ExcelUploaderProps) {
   const [rawRows, setRawRows] = useState<RowData[]>([]);
@@ -411,7 +413,9 @@ export default function ExcelUploader({
 
       for (let index = 0; index < Math.max(1, maxLen); index++) {
         rows.push([
-          index === 0 ? line : "",
+          index === 0
+            ? [line, ...(lineDetails[line] || [])].join("\n")
+            : "",
           ...visibleColumns.map((column) => row?.[column]?.[index] || ""),
         ]);
       }
@@ -709,7 +713,21 @@ export default function ExcelUploader({
                             color: "#333",
                           }}
                         >
-                          {lineKey}
+                          <div>{lineKey}</div>
+                          {lineDetails[lineKey]?.map((detail) => (
+                            <div
+                              key={detail}
+                              style={{
+                                color: "#666",
+                                fontSize: 11,
+                                fontWeight: 400,
+                                marginTop: 3,
+                                whiteSpace: "nowrap",
+                              }}
+                            >
+                              {detail}
+                            </div>
+                          ))}
                         </td>
                         {visibleColumns.map((column) => (
                           <td
