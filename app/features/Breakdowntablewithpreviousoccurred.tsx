@@ -255,8 +255,8 @@ function PreviousOccurrenceTag({ text }: { text: string }) {
 // ─── Main component ──────────────────────────────────────────────────────────
 
 export default function BreakdownTableWithPreviousOccurred({
-  title = "Spinning Analysis",
-  reportName = "breakdown",
+  title = "Spinnning With Previous Occurred",
+  reportName = "breakdownspiining-previouseccurance",
   extractLine = extractBreakdownLine,
   lineDetails = {},
   lineMode = "sequential",
@@ -279,6 +279,11 @@ export default function BreakdownTableWithPreviousOccurred({
      * Key: `${line}||${unit}||${subHeadReasonNormalized}`
      * Value: array of { date: Date; formatted: string } sorted ascending by date
      */
+
+    console.time("PREVIOUS_OCCURRENCE_MAP");
+
+console.log("Building previousOccurrenceMap...");
+
     const map = new Map<string, { date: Date; formatted: string }[]>();
 
     rawRows.forEach((row) => {
@@ -311,41 +316,11 @@ export default function BreakdownTableWithPreviousOccurred({
     map.forEach((entries) => {
       entries.sort((a, b) => a.date.getTime() - b.date.getTime());
     });
+    console.log("previousOccurrenceMap Keys:", map.size);
 
+    console.timeEnd("PREVIOUS_OCCURRENCE_MAP");
     return map;
   }, [rawRows, extractLine]);
-
-  /**
-   * Given a current row, find the most-recent occurrence of the same
-   * (line, unit, subHeadReason) that happened STRICTLY BEFORE this row's date.
-   * Returns the formatted string or null.
-   */
-  const findPreviousOccurrence = (row: RowData): string | null => {
-    const { plant, line } = getPlantAndLine(
-      row["Functional Location"],
-      extractLine
-    );
-    const unit = mapPlantToUnit(plant);
-    if (!unit || !line) return null;
-
-    const sub = String(row["Sub Head reason"] || "").trim().toLowerCase();
-    if (!sub) return null;
-
-    const currentDate = parseExcelDate(row["Date"]);
-    if (!currentDate) return null;
-
-    const key = `${line}||${unit}||${sub}`;
-    const bucket = previousOccurrenceMap.get(key);
-    if (!bucket) return null;
-
-    // Find all entries strictly before currentDate, pick the latest one
-    const earlier = bucket.filter(
-      (e) => e.date.getTime() < currentDate.getTime()
-    );
-    if (earlier.length === 0) return null;
-
-    return earlier[earlier.length - 1].formatted;
-  };
 
   // ── Filtering (identical logic to original) ──────────────────────────────
 
@@ -358,6 +333,11 @@ export default function BreakdownTableWithPreviousOccurred({
     lineOptions,
     unitOptions,
   } = useMemo(() => {
+    console.time("FILTERING");
+
+console.log("Filtering Started", {
+  totalRows: rawRows.length,
+});
     const matchesFilters = (row: RowData, ignoredFilters: FilterName[] = []) => {
       const { plant, line } = getPlantAndLine(
         row["Functional Location"],
@@ -464,6 +444,13 @@ export default function BreakdownTableWithPreviousOccurred({
       lineOptions: getLineOptions(getRowsForOptions(["line"])),
       unitOptions: getUnitOptions(getRowsForOptions(["unit"])),
     };
+    const finalFilteredRows = rawRows.filter((row) =>
+        matchesFilters(row)
+      );
+      
+      console.log("Filtered Rows Count:", finalFilteredRows.length);
+      
+      console.timeEnd("FILTERING");
   }, [
     rawRows,
     extractLine,
@@ -482,9 +469,37 @@ export default function BreakdownTableWithPreviousOccurred({
     : columns;
 
   // ── Build table data with previous occurrence enrichment ─────────────────
+  // previousOccurrenceMap is the only external dep; findPrevious is inlined
+  // here to avoid the unstable-function-reference re-computation trap.
 
   const tableData = useMemo(() => {
     const result: TableData = {};
+    console.time("TABLE_DATA_BUILD");
+
+console.log("Building tableData from rows:", filteredRows.length);
+
+    /**
+     * Binary search: find the last entry in a sorted (ascending) bucket
+     * whose date is strictly before `targetTime`. O(log n) per call.
+     */
+    const findPrevInBucket = (
+      bucket: { date: Date; formatted: string }[],
+      targetTime: number
+    ): string | null => {
+      let lo = 0;
+      let hi = bucket.length - 1;
+      let found = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >>> 1;
+        if (bucket[mid].date.getTime() < targetTime) {
+          found = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      return found === -1 ? null : bucket[found].formatted;
+    };
 
     filteredRows.forEach((row) => {
       const { plant, line } = getPlantAndLine(
@@ -502,13 +517,26 @@ export default function BreakdownTableWithPreviousOccurred({
       }
 
       const current = formatCurrentCell(row);
-      const previous = findPreviousOccurrence(row);
+
+      // Inline previous-occurrence lookup (no closure over unstable function)
+      let previous: string | null = null;
+      const sub = String(row["Sub Head reason"] || "").trim().toLowerCase();
+      const currentDate = parseExcelDate(row["Date"]);
+      if (sub && currentDate) {
+        const key = `${line}||${unit}||${sub}`;
+        const bucket = previousOccurrenceMap.get(key);
+        if (bucket) {
+          previous = findPrevInBucket(bucket, currentDate.getTime());
+        }
+      }
 
       result[line][unit].push({ current, previous });
     });
+    console.log("tableData Lines:", Object.keys(result).length);
 
+    console.timeEnd("TABLE_DATA_BUILD");
     return result;
-  }, [filteredRows, extractLine, findPreviousOccurrence]);
+  }, [filteredRows, extractLine, previousOccurrenceMap]);
 
   // ── Summary rows ─────────────────────────────────────────────────────────
 
@@ -551,13 +579,39 @@ export default function BreakdownTableWithPreviousOccurred({
   };
 
   const handleFile = (file: File) => {
+    console.time("TOTAL_FILE_PROCESS");
+  
+    console.log("Uploading File:", {
+      name: file.name,
+      size: `${(file.size / 1024 / 1024).toFixed(2)} MB`,
+    });
+  
     const reader = new FileReader();
+  
     reader.onload = (event) => {
+      console.time("XLSX_READ");
+  
       const wb = XLSX.read(event.target?.result, { type: "binary" });
+  
+      console.timeEnd("XLSX_READ");
+  
       const sheet = wb.Sheets[wb.SheetNames[0]];
-      setRawRows(XLSX.utils.sheet_to_json<RowData>(sheet));
+  
+      console.time("SHEET_TO_JSON");
+  
+      const rows = XLSX.utils.sheet_to_json<RowData>(sheet);
+  
+      console.timeEnd("SHEET_TO_JSON");
+  
+      console.log("Excel Rows Loaded:", rows.length);
+  
+      setRawRows(rows);
+  
       resetFilters();
+  
+      console.timeEnd("TOTAL_FILE_PROCESS");
     };
+  
     reader.readAsBinaryString(file);
   };
 

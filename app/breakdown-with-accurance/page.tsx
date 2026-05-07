@@ -1,5 +1,5 @@
-import BreakdownAnalysis from "../features/BreakdownAnalysis";
+import BreakdownTableWithPreviousOccurred from "../features/Breakdowntablewithpreviousoccurred";
 
-export default function BreakdownPage() {
-  return <BreakdownAnalysis />;
+export default function BreakdownTableWithPreviousOccurredPage() {
+  return <BreakdownTableWithPreviousOccurred />;
 }

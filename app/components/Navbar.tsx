@@ -5,11 +5,11 @@ import { usePathname } from "next/navigation";
 
 const navItems = [
   { href: "/breakdown", label: "Spinning" },
+  { href: "/breakdown-with-accurance", label: "Spinning With Accurance" },
   { href: "/viscose", label: "Viscose" },
   { href: "/auxilary-recovery", label: "Auxilary&Recovery" },
   { href: "/acid-plant", label: "Acid Plant" },
   { href: "/cs2", label: "CS2" },
-  { href: "/breakdown-with-accurance", label: "Breakdown With Accurance" },
 ];
 
 export default function Navbar() {

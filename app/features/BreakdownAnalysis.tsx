@@ -1,7 +1,7 @@
 "use client";
 
-import BreakdownTableWithPreviousOccurred from "./Breakdowntablewithpreviousoccurred";
+import ExcelUploader from "../Breakdowntable";
 
-export default function BreakdownTableWithPreviousOccurredPage() {
-  return <BreakdownTableWithPreviousOccurred title="Spinning Analysis" reportName="breakdown" />;
+export default function BreakdownAnalysis() {
+  return <ExcelUploader title="Breakdown Analysis" reportName="breakdown" />;
 }
