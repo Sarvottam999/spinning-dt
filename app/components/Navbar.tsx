@@ -10,6 +10,7 @@ const navItems = [
   { href: "/auxilary-recovery", label: "Auxilary&Recovery" },
   { href: "/acid-plant", label: "Acid Plant" },
   { href: "/cs2", label: "CS2" },
+  { href: "/idle-percentage", label: "Idle Percentage" },
 ];
 
 export default function Navbar() {
