@@ -62,15 +62,13 @@ const SEC_MAP: Record<string,string> = {
   "WSA":"wsa",
 };
 
-// Canonical display order for head reasons
 const HEAD_REASON_ORDER = ["IDLE","PLANNED","UNPLANNED","OTHERS"];
 
-// Colors per head reason section label
-const HR_COLORS: Record<string,{bg:string,sub:string,label:string,remBg:string,remSub:string,remLabel:string}> = {
-  IDLE:      { bg:"#fce4d6", sub:"#f4b183", label:"Idle Hrs.",           remBg:"#fdf3ee", remSub:"#f9cdb0", remLabel:"Remaining Hrs. (after Idle)"      },
-  PLANNED:   { bg:"#e2efda", sub:"#a9d18e", label:"Planned Hrs.",        remBg:"#f0f7eb", remSub:"#c6e3b1", remLabel:"Remaining Hrs. (after Planned)"   },
-  UNPLANNED: { bg:"#fff2cc", sub:"#ffd966", label:"Unplanned Hrs.",      remBg:"#fffae5", remSub:"#ffe99a", remLabel:"Remaining Hrs. (after Unplanned)" },
-  OTHERS:    { bg:"#ededed", sub:"#bfbfbf", label:"Others Hrs.",         remBg:"#f5f5f5", remSub:"#d6d6d6", remLabel:"Remaining Hrs. (after Others)"    },
+const HR_COLORS: Record<string,{bg:string,sub:string,label:string,remBg:string,remSub:string,remLabel:string,pctBg:string,pctSub:string,pctLabel:string}> = {
+  IDLE:      { bg:"#fce4d6", sub:"#f4b183", label:"Idle Hrs.",      remBg:"#fdf3ee", remSub:"#f9cdb0", remLabel:"Remaining Hrs. (after Idle)",      pctBg:"#fce9df", pctSub:"#f7c4a0", pctLabel:"% Idle Hrs. / Total Hrs."      },
+  PLANNED:   { bg:"#e2efda", sub:"#a9d18e", label:"Planned Hrs.",   remBg:"#f0f7eb", remSub:"#c6e3b1", remLabel:"Remaining Hrs. (after Planned)",   pctBg:"#e8f3e1", pctSub:"#bcdba4", pctLabel:"% Planned Hrs. / Total Hrs."   },
+  UNPLANNED: { bg:"#fff2cc", sub:"#ffd966", label:"Unplanned Hrs.", remBg:"#fffae5", remSub:"#ffe99a", remLabel:"Remaining Hrs. (after Unplanned)", pctBg:"#fff6d6", pctSub:"#ffdf80", pctLabel:"% Unplanned Hrs. / Total Hrs." },
+  OTHERS:    { bg:"#ededed", sub:"#bfbfbf", label:"Others Hrs.",    remBg:"#f5f5f5", remSub:"#d6d6d6", remLabel:"Remaining Hrs. (after Others)",    pctBg:"#f0f0f0", pctSub:"#cccccc", pctLabel:"% Others Hrs. / Total Hrs."    },
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -119,7 +117,6 @@ async function parseExcel(file: File) {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-// dm structure: dm[headReason][plant][processKey][monthLabel] = totalDownHrs
 type DM = Record<string, Record<number, Record<string, Record<string, number>>>>;
 
 export default function IdleAnalysis() {
@@ -150,11 +147,9 @@ export default function IdleAnalysis() {
       map[hr][p][pk][lbl] = (map[hr][p][pk][lbl]||0) + r._down;
     });
 
-    // active process keys (from Section col), in canonical order
     const seenPks = new Set(rows.map((r:any) => SEC_MAP[r._sec]).filter(Boolean));
     const orderedPks = ALL_KEYS.filter(k => seenPks.has(k));
 
-    // active head reasons, sorted by canonical order then any extras alphabetically
     const seenHRs = new Set(rows.map((r:any) => r._hr).filter(Boolean));
     const orderedHRs = [
       ...HEAD_REASON_ORDER.filter(h => seenHRs.has(h)),
@@ -169,110 +164,133 @@ export default function IdleAnalysis() {
   }, []);
 
   const reset = () => { setLoaded(false); setMonths([]); setDm({}); setActivePks([]); setActiveHRs([]); setFN(""); };
-
   const onDrop = (e: React.DragEvent) => { e.preventDefault(); setDrag(false); const f=e.dataTransfer.files[0]; if(f) load(f); };
 
-  // ── Shared styles ──
   const border = "1px solid #b0b0b0";
   const base: React.CSSProperties = { border, padding:"2px 5px", fontSize:11, whiteSpace:"nowrap", fontFamily:"Calibri,Arial,sans-serif" };
   const num:  React.CSSProperties = { ...base, textAlign:"right" };
   const hdr:  React.CSSProperties = { ...base, textAlign:"center", fontWeight:700 };
 
-  // ── Reusable: render one set of process sub-tables for a given data map (Down Hrs) ──
+  // ── Shared table skeleton ──
+  function renderTableShell(
+    pk: string,
+    bgColor: string,
+    subColor: string,
+    rows: React.ReactNode
+  ) {
+    return (
+      <table key={pk} style={{ borderCollapse:"collapse", marginBottom:8 }}>
+        <thead>
+          <tr>
+            <td style={{...hdr, background:bgColor, textAlign:"left", minWidth:65}} colSpan={2}>{PL[pk]}</td>
+            {months.map(mk => (
+              <th key={mk.label} style={{...hdr, background:bgColor, minWidth:52}}>{mk.label}</th>
+            ))}
+          </tr>
+          <tr>
+            <td style={{...base, background:subColor}} colSpan={2}></td>
+            {months.map(mk => (
+              <td key={mk.label} style={{...num, background:subColor, textAlign:"center", color:"#555", fontSize:10}}>{mk.days}</td>
+            ))}
+          </tr>
+        </thead>
+        <tbody>{rows}</tbody>
+      </table>
+    );
+  }
+
+  // ── Down Hrs tables ──
   function renderProcessTables(
     dataMap: Record<number, Record<string, Record<string, number>>>,
     pks: string[],
     bgColor: string,
     subColor: string
   ) {
-    return pks.map(pk => (
-      <table key={pk} style={{ borderCollapse:"collapse", marginBottom:8 }}>
-        <thead>
-          <tr>
-            <td style={{...hdr, background:bgColor, textAlign:"left", minWidth:65}} colSpan={2}>{PL[pk]}</td>
-            {months.map(mk => (
-              <th key={mk.label} style={{...hdr, background:bgColor, minWidth:52}}>{mk.label}</th>
-            ))}
+    return pks.map(pk =>
+      renderTableShell(pk, bgColor, subColor,
+        UNITS.map((u,i) => (
+          <tr key={u.name} style={{background:i%2===1?"#f2f2f2":"#fff"}}>
+            <td style={{...base, textAlign:"left", fontWeight:600, minWidth:55}}>{u.name}</td>
+            <td style={{...num, textAlign:"center", color:"#555", minWidth:45}}>{u.plant}</td>
+            {months.map(mk => {
+              const v = dataMap[u.plant]?.[pk]?.[mk.label] ?? 0;
+              return <td key={mk.label} style={{...num, color:v===0?"#bbb":"#000"}}>{v===0?"-":v.toFixed(2)}</td>;
+            })}
           </tr>
-          <tr>
-            <td style={{...base, background:subColor}} colSpan={2}></td>
-            {months.map(mk => (
-              <td key={mk.label} style={{...num, background:subColor, textAlign:"center", color:"#555", fontSize:10}}>{mk.days}</td>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {UNITS.map((u,i) => (
-            <tr key={u.name} style={{background:i%2===1?"#f2f2f2":"#fff"}}>
-              <td style={{...base, textAlign:"left", fontWeight:600, minWidth:55}}>{u.name}</td>
-              <td style={{...num, textAlign:"center", color:"#555", minWidth:45}}>{u.plant}</td>
-              {months.map(mk => {
-                const v = dataMap[u.plant]?.[pk]?.[mk.label] ?? 0;
-                return (
-                  <td key={mk.label} style={{...num, color: v===0?"#bbb":"#000"}}>
-                    {v===0 ? "-" : v.toFixed(2)}
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    ));
+        ))
+      )
+    );
   }
 
-  // ── NEW: render Remaining Hrs tables for a specific head reason ──
-  // Remaining = Total Hrs (mc × days × 24) − down hrs for THIS head reason only
-  function renderRemainingTables(
-    hr: string,
-    pks: string[],
-    bgColor: string,
-    subColor: string
-  ) {
-    return pks.map(pk => (
-      <table key={pk} style={{ borderCollapse:"collapse", marginBottom:8 }}>
-        <thead>
-          <tr>
-            <td style={{...hdr, background:bgColor, textAlign:"left", minWidth:65}} colSpan={2}>{PL[pk]}</td>
-            {months.map(mk => (
-              <th key={mk.label} style={{...hdr, background:bgColor, minWidth:52}}>{mk.label}</th>
-            ))}
+  // ── Remaining Hrs tables: Total − this HR's down ──
+  function renderRemainingTables(hr: string, pks: string[], bgColor: string, subColor: string) {
+    return pks.map(pk => {
+      const mc_row = (u: typeof UNITS[0], i: number) => {
+        const mc = MC[u.name]?.[pk] ?? 0;
+        return (
+          <tr key={u.name} style={{background:i%2===1?"#f2f2f2":"#fff"}}>
+            <td style={{...base, textAlign:"left", fontWeight:600, minWidth:55}}>{u.name}</td>
+            <td style={{...num, textAlign:"center", color:"#555", minWidth:45}}>{u.plant}</td>
+            {months.map(mk => {
+              const total     = mc * mk.days * 24;
+              const downForHR = dm[hr]?.[u.plant]?.[pk]?.[mk.label] ?? 0;
+              const remaining = total - downForHR;
+              const isNeg     = remaining < 0;
+              return (
+                <td key={mk.label} style={{...num,
+                  color: total===0?"#bbb":isNeg?"#c00":"#000",
+                  fontWeight: isNeg?700:"normal"
+                }}>
+                  {total===0?"-":remaining.toFixed(2)}
+                </td>
+              );
+            })}
           </tr>
-          <tr>
-            <td style={{...base, background:subColor}} colSpan={2}></td>
-            {months.map(mk => (
-              <td key={mk.label} style={{...num, background:subColor, textAlign:"center", color:"#555", fontSize:10}}>{mk.days}</td>
-            ))}
+        );
+      };
+      return renderTableShell(pk, bgColor, subColor, UNITS.map(mc_row));
+    });
+  }
+
+  // ── % Hrs tables: (this HR's down ÷ Total) × 100 ──
+  function renderPercentageTables(hr: string, pks: string[], bgColor: string, subColor: string) {
+    return pks.map(pk => {
+      const pct_row = (u: typeof UNITS[0], i: number) => {
+        const mc = MC[u.name]?.[pk] ?? 0;
+        return (
+          <tr key={u.name} style={{background:i%2===1?"#f2f2f2":"#fff"}}>
+            <td style={{...base, textAlign:"left", fontWeight:600, minWidth:55}}>{u.name}</td>
+            <td style={{...num, textAlign:"center", color:"#555", minWidth:45}}>{u.plant}</td>
+            {months.map(mk => {
+              const total     = mc * mk.days * 24;
+              const downForHR = dm[hr]?.[u.plant]?.[pk]?.[mk.label] ?? 0;
+              const pct       = total === 0 ? null : (downForHR / total) * 100;
+              const isHigh    = pct !== null && pct > 100;
+              const isEmpty   = pct === null || pct === 0;
+              return (
+                <td key={mk.label} style={{...num,
+                  color: isEmpty?"#bbb":isHigh?"#c00":"#000",
+                  fontWeight: isHigh?700:"normal"
+                }}>
+                  {isEmpty ? "-" : `${pct!.toFixed(2)}%`}
+                </td>
+              );
+            })}
           </tr>
-        </thead>
-        <tbody>
-          {UNITS.map((u, i) => {
-            const mc = MC[u.name]?.[pk] ?? 0;
-            return (
-              <tr key={u.name} style={{background:i%2===1?"#f2f2f2":"#fff"}}>
-                <td style={{...base, textAlign:"left", fontWeight:600, minWidth:55}}>{u.name}</td>
-                <td style={{...num, textAlign:"center", color:"#555", minWidth:45}}>{u.plant}</td>
-                {months.map(mk => {
-                  const total     = mc * mk.days * 24;
-                  // Only subtract THIS head reason's down hours
-                  const downForHR = dm[hr]?.[u.plant]?.[pk]?.[mk.label] ?? 0;
-                  const remaining = total - downForHR;
-                  const isNeg     = remaining < 0;
-                  return (
-                    <td key={mk.label} style={{...num,
-                      color: total===0 ? "#bbb" : isNeg ? "#c00" : "#000",
-                      fontWeight: isNeg ? 700 : "normal"
-                    }}>
-                      {total===0 ? "-" : remaining.toFixed(2)}
-                    </td>
-                  );
-                })}
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    ));
+        );
+      };
+      return renderTableShell(pk, bgColor, subColor, UNITS.map(pct_row));
+    });
+  }
+
+  // ── Section title bar ──
+  function SectionTitle({ label, borderColor }: { label: string; borderColor: string }) {
+    return (
+      <div style={{ fontWeight:700, fontSize:12, margin:"14px 0 4px", color:"#1f3864",
+        borderBottom:`2px solid ${borderColor}`, paddingBottom:2, display:"inline-block" }}>
+        {label}
+      </div>
+    );
   }
 
   return (
@@ -280,8 +298,8 @@ export default function IdleAnalysis() {
 
       {/* Title */}
       <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
-        <b style={{ fontSize:13, color:"#1f3864" }}>Downtime Analysis</b>
-        {loaded && <span style={{ color:"#555", fontSize:11 }}>— {fileName}</span>}
+        {/* <b style={{ fontSize:13, color:"#1f3864" }}>Downtime Analysis</b> */}
+        {/* {loaded && <span style={{ color:"#555", fontSize:11 }}>— {fileName}</span>} */}
         {loaded && (
           <button onClick={reset} style={{ marginLeft:"auto", fontSize:11, padding:"2px 10px", cursor:"pointer" }}>✕ Reset</button>
         )}
@@ -337,72 +355,51 @@ export default function IdleAnalysis() {
             </tbody>
           </table>
 
-          {/* ══ TOTAL HRS  (formula: unitMachineCount × daysInMonth × 24) ══ */}
-          <div style={{ fontWeight:700, fontSize:12, marginBottom:4, color:"#1f3864",
-            borderBottom:"2px solid #4472c4", paddingBottom:2, display:"inline-block" }}>
-            Total Hrs.
-          </div>
-          {activePks.map(pk => (
-            <table key={pk} style={{ borderCollapse:"collapse", marginBottom:8 }}>
-              <thead>
-                <tr>
-                  <td style={{...hdr, background:"#dce6f1", textAlign:"left", minWidth:65}} colSpan={2}>{PL[pk]}</td>
-                  {months.map(mk => (
-                    <th key={mk.label} style={{...hdr, background:"#dce6f1", minWidth:52}}>{mk.label}</th>
-                  ))}
-                </tr>
-                <tr>
-                  <td style={{...base, background:"#e8e8e8"}} colSpan={2}></td>
-                  {months.map(mk => (
-                    <td key={mk.label} style={{...num, background:"#e8e8e8", textAlign:"center", color:"#555", fontSize:10}}>{mk.days}</td>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {UNITS.map((u,i) => {
-                  const mc = MC[u.name]?.[pk] ?? 0;
-                  return (
-                    <tr key={u.name} style={{background:i%2===1?"#f2f2f2":"#fff"}}>
-                      <td style={{...base, textAlign:"left", fontWeight:600, minWidth:55}}>{u.name}</td>
-                      <td style={{...num, textAlign:"center", color:"#555", minWidth:45}}>{u.plant}</td>
-                      {months.map(mk => {
-                        const total = mc * mk.days * 24;
-                        return (
-                          <td key={mk.label} style={{...num, color: total===0?"#bbb":"#000"}}>
-                            {total===0 ? "-" : total.toLocaleString()}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          ))}
+          {/* ══ TOTAL HRS ══ */}
+          <SectionTitle label="Total Hrs." borderColor="#4472c4" />
+          {activePks.map(pk =>
+            renderTableShell(pk, "#dce6f1", "#e8e8e8",
+              UNITS.map((u,i) => {
+                const mc = MC[u.name]?.[pk] ?? 0;
+                return (
+                  <tr key={u.name} style={{background:i%2===1?"#f2f2f2":"#fff"}}>
+                    <td style={{...base, textAlign:"left", fontWeight:600, minWidth:55}}>{u.name}</td>
+                    <td style={{...num, textAlign:"center", color:"#555", minWidth:45}}>{u.plant}</td>
+                    {months.map(mk => {
+                      const total = mc * mk.days * 24;
+                      return (
+                        <td key={mk.label} style={{...num, color:total===0?"#bbb":"#000"}}>
+                          {total===0?"-":total.toLocaleString()}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })
+            )
+          )}
 
-          {/* ══ ONE BLOCK PER HEAD REASON: Down Hrs + Remaining Hrs ══ */}
+          {/* ══ ONE BLOCK PER HEAD REASON: Down Hrs → Remaining Hrs → % Hrs ══ */}
           {activeHRs.map(hr => {
+            const hrName = hr.charAt(0) + hr.slice(1).toLowerCase();
             const c = HR_COLORS[hr] ?? {
-              bg:"#ededed", sub:"#bfbfbf",
-              label: hr.charAt(0)+hr.slice(1).toLowerCase()+" Hrs.",
-              remBg:"#f5f5f5", remSub:"#d6d6d6",
-              remLabel: "Remaining Hrs. (after "+hr.charAt(0)+hr.slice(1).toLowerCase()+")",
+              bg:"#ededed",  sub:"#bfbfbf",  label:`${hrName} Hrs.`,
+              remBg:"#f5f5f5", remSub:"#d6d6d6", remLabel:`Remaining Hrs. (after ${hrName})`,
+              pctBg:"#f0f0f0", pctSub:"#cccccc", pctLabel:`% ${hrName} Hrs. / Total Hrs.`,
             };
             return (
               <div key={hr}>
-                {/* ── Head Reason Down Hrs ── */}
-                <div style={{ fontWeight:700, fontSize:12, margin:"14px 0 4px", color:"#1f3864",
-                  borderBottom:`2px solid ${c.sub}`, paddingBottom:2, display:"inline-block" }}>
-                  {c.label}
-                </div>
+                {/* Down Hrs */}
+                <SectionTitle label={c.label} borderColor={c.sub} />
                 {renderProcessTables(dm[hr] ?? {}, activePks, c.bg, c.sub)}
 
-                {/* ── Remaining Hrs for THIS head reason ── */}
-                <div style={{ fontWeight:700, fontSize:12, margin:"10px 0 4px", color:"#1f3864",
-                  borderBottom:`2px solid ${c.remSub}`, paddingBottom:2, display:"inline-block" }}>
-                  {c.remLabel}
-                </div>
+                {/* Remaining Hrs */}
+                <SectionTitle label={c.remLabel} borderColor={c.remSub} />
                 {renderRemainingTables(hr, activePks, c.remBg, c.remSub)}
+
+                {/* % of Total Hrs */}
+                <SectionTitle label={c.pctLabel} borderColor={c.pctSub} />
+                {renderPercentageTables(hr, activePks, c.pctBg, c.pctSub)}
               </div>
             );
           })}
