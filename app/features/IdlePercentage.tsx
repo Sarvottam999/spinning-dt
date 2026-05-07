@@ -71,15 +71,87 @@ const HR_COLORS: Record<string,{bg:string,sub:string,label:string,remBg:string,r
   OTHERS:    { bg:"#ededed", sub:"#bfbfbf", label:"Others Hrs.",    remBg:"#f5f5f5", remSub:"#d6d6d6", remLabel:"Remaining Hrs. (after Others)",    pctBg:"#f0f0f0", pctSub:"#cccccc", pctLabel:"% Others Hrs. / Total Hrs."    },
 };
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Date Helpers ─────────────────────────────────────────────────────────────
 
 function dim(y: number, m: number) { return new Date(y, m, 0).getDate(); }
 
-function parseDate(v: any): Date | null {
-  if (!v) return null;
-  if (v instanceof Date) return v;
-  if (typeof v === "number") return new Date((v - 25569) * 86400000);
-  const d = new Date(v); return isNaN(d.getTime()) ? null : d;
+interface YMD { y: number; m: number; d: number }
+
+/**
+ * Parse a value from the "Date" column into a YMD.
+ *
+ * Strategy: read with cellDates:false so XLSX never creates a Date object.
+ * We then handle three cases:
+ *   1. Numeric serial  → floor to strip any fractional time, convert via UTC
+ *   2. String DD/MM/YYYY or YYYY-MM-DD  → parse directly, no timezone involved
+ *   3. Anything else   → return null
+ *
+ * We deliberately NEVER use Date.getFullYear/getMonth/getDate on a UTC-epoch
+ * Date, because that introduces the IST (+05:30) timezone shift that was
+ * causing April 30 23:59 → May 1.
+ */
+function parseDateOnly(v: any): YMD | null {
+  if (v === null || v === undefined || v === "") return null;
+
+  // ── Case 1: numeric Excel serial ──────────────────────────────────────────
+  if (typeof v === "number") {
+    // Floor strips fractional time (e.g. 46941.9999 → 46941 = Apr 30)
+    const serial = Math.floor(v);
+    // Excel epoch: Jan 1 1900 = serial 1 (with the Lotus 1-2-3 leap-year bug)
+    const ms = (serial - 25569) * 86400000; // 25569 = days from 1900-01-01 to 1970-01-01
+    const y = new Date(ms).getUTCFullYear();
+    const m = new Date(ms).getUTCMonth() + 1;
+    const d = new Date(ms).getUTCDate();
+    console.log(`[parseDateOnly] numeric serial ${v} → floored ${serial} → ${y}-${m}-${d}`);
+    return { y, m, d };
+  }
+
+  // ── Case 2: string ────────────────────────────────────────────────────────
+  if (typeof v === "string") {
+    const s = v.trim();
+
+    // DD/MM/YYYY  or  DD-MM-YYYY
+    const dmy = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+    if (dmy) {
+      const result = { d: +dmy[1], m: +dmy[2], y: +dmy[3] };
+      console.log(`[parseDateOnly] DD/MM/YYYY string "${s}" →`, result);
+      return result;
+    }
+
+    // YYYY-MM-DD  (ISO)
+    const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (iso) {
+      const result = { y: +iso[1], m: +iso[2], d: +iso[3] };
+      console.log(`[parseDateOnly] ISO string "${s}" →`, result);
+      return result;
+    }
+
+    // MM/DD/YYYY  (US format — fallback)
+    const mdy = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+    if (mdy && +mdy[1] <= 12 && +mdy[2] <= 31) {
+      // Ambiguous — prefer DD/MM already handled above; if we reach here it
+      // didn't match the first pattern, so try US
+      const result = { m: +mdy[1], d: +mdy[2], y: +mdy[3] };
+      console.log(`[parseDateOnly] MM/DD/YYYY string "${s}" →`, result);
+      return result;
+    }
+
+    console.warn(`[parseDateOnly] unrecognised string: "${s}"`);
+    return null;
+  }
+
+  // ── Case 3: Date object (should not happen with cellDates:false, but guard) ─
+  if (v instanceof Date) {
+    // Use LOCAL getters — this is what the user sees in Excel on their machine
+    const y = v.getFullYear();
+    const m = v.getMonth() + 1;
+    const d = v.getDate();
+    console.log(`[parseDateOnly] Date object ${v.toString()} → local ${y}-${m}-${d}`);
+    return { y, m, d };
+  }
+
+  console.warn("[parseDateOnly] unrecognised type:", typeof v, v);
+  return null;
 }
 
 interface MM { y:number; m:number; label:string; days:number }
@@ -87,25 +159,41 @@ interface MM { y:number; m:number; label:string; days:number }
 function getMonths(rows: any[]): MM[] {
   const seen = new Map<string,MM>();
   rows.forEach(r => {
-    const d = parseDate(r._d); if (!d) return;
-    const y = d.getFullYear(), m = d.getMonth()+1;
-    const label = `${String(m).padStart(2,"0")}/${String(y).slice(-2)}`;
-    if (!seen.has(label)) seen.set(label, { y, m, label, days: dim(y, m) });
+    const ymd = parseDateOnly(r._d); if (!ymd) return;
+    const label = `${String(ymd.m).padStart(2,"0")}/${String(ymd.y).slice(-2)}`;
+    if (!seen.has(label)) seen.set(label, { y: ymd.y, m: ymd.m, label, days: dim(ymd.y, ymd.m) });
   });
   return [...seen.values()].sort((a,b) => a.y!==b.y ? a.y-b.y : a.m-b.m);
 }
 
+// ─── Excel Parser ─────────────────────────────────────────────────────────────
+
 async function parseExcel(file: File) {
   const buf = await file.arrayBuffer();
-  const wb = XLSX.read(buf, { type:"array", cellDates:true });
+  // cellDates:false → dates come in as raw numbers or formatted strings,
+  // never as Date objects — completely sidesteps the timezone problem.
+  const wb = XLSX.read(buf, { type:"array", cellDates:false, raw:false });
   const ws = wb.Sheets[wb.SheetNames[0]];
-  const json: any[] = XLSX.utils.sheet_to_json(ws, { defval:"" });
+  const json: any[] = XLSX.utils.sheet_to_json(ws, { defval:"", raw:true });
+
+  console.log("[parseExcel] Total rows:", json.length);
+  if (json.length > 0) {
+    const firstRow = json[0];
+    console.log("[parseExcel] Column headers:", Object.keys(firstRow));
+    console.log("[parseExcel] First row sample:", firstRow);
+  }
+
   const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g," ").replace(/\s+/g," ").trim();
-  return json.map(row => {
+
+  return json.map((row, idx) => {
     const r: any = {};
     Object.entries(row).forEach(([k,v]) => {
       const n = norm(k);
-      if (n==="date"||n.includes("date"))               r._d    = v;
+      // Match only the standalone "date" column — not "start time", "end time", etc.
+      if (n === "date") {
+        r._d = v;
+        if (idx < 5) console.log(`[parseExcel] row#${idx} date col key="${k}" raw value:`, v, "type:", typeof v);
+      }
       if (n==="plant")                                   r._plant= Number(v)||0;
       if (n==="section")                                 r._sec  = String(v).toUpperCase().replace(/\s+/g," ").trim();
       if (n==="head reason"||n==="headreason")           r._hr   = String(v).toUpperCase().replace(/\s+/g," ").trim();
@@ -134,11 +222,14 @@ export default function IdleAnalysis() {
     const rows = await parseExcel(file);
     const ms   = getMonths(rows);
 
+    console.log("[load] Months detected:", ms);
+
     const map: DM = {};
-    rows.forEach(r => {
-      const d = parseDate(r._d); if (!d) return;
-      const lbl = `${String(d.getMonth()+1).padStart(2,"0")}/${String(d.getFullYear()).slice(-2)}`;
-      const pk = SEC_MAP[r._sec];  if (!pk) return;
+
+    rows.forEach((r, idx) => {
+      const ymd = parseDateOnly(r._d); if (!ymd) return;
+      const lbl = `${String(ymd.m).padStart(2,"0")}/${String(ymd.y).slice(-2)}`;
+      const pk = SEC_MAP[r._sec]; if (!pk) return;
       const hr = r._hr || "OTHERS";
       const p  = r._plant;
       if (!map[hr])         map[hr]         = {};
@@ -171,13 +262,7 @@ export default function IdleAnalysis() {
   const num:  React.CSSProperties = { ...base, textAlign:"right" };
   const hdr:  React.CSSProperties = { ...base, textAlign:"center", fontWeight:700 };
 
-  // ── Shared table skeleton ──
-  function renderTableShell(
-    pk: string,
-    bgColor: string,
-    subColor: string,
-    rows: React.ReactNode
-  ) {
+  function renderTableShell(pk: string, bgColor: string, subColor: string, rows: React.ReactNode) {
     return (
       <table key={pk} style={{ borderCollapse:"collapse", marginBottom:8 }}>
         <thead>
@@ -199,7 +284,6 @@ export default function IdleAnalysis() {
     );
   }
 
-  // ── Down Hrs tables ──
   function renderProcessTables(
     dataMap: Record<number, Record<string, Record<string, number>>>,
     pks: string[],
@@ -222,7 +306,6 @@ export default function IdleAnalysis() {
     );
   }
 
-  // ── Remaining Hrs tables: Total − this HR's down ──
   function renderRemainingTables(hr: string, pks: string[], bgColor: string, subColor: string) {
     return pks.map(pk => {
       const mc_row = (u: typeof UNITS[0], i: number) => {
@@ -252,7 +335,6 @@ export default function IdleAnalysis() {
     });
   }
 
-  // ── % Hrs tables: (this HR's down ÷ Total) × 100 ──
   function renderPercentageTables(hr: string, pks: string[], bgColor: string, subColor: string) {
     return pks.map(pk => {
       const pct_row = (u: typeof UNITS[0], i: number) => {
@@ -283,7 +365,6 @@ export default function IdleAnalysis() {
     });
   }
 
-  // ── Section title bar ──
   function SectionTitle({ label, borderColor }: { label: string; borderColor: string }) {
     return (
       <div style={{ fontWeight:700, fontSize:12, margin:"14px 0 4px", color:"#1f3864",
@@ -296,16 +377,14 @@ export default function IdleAnalysis() {
   return (
     <div style={{ padding:12, background:"#fff", fontFamily:"Calibri,Arial,sans-serif", fontSize:11 }}>
 
-      {/* Title */}
       <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
-        {/* <b style={{ fontSize:13, color:"#1f3864" }}>Downtime Analysis</b> */}
-        {/* {loaded && <span style={{ color:"#555", fontSize:11 }}>— {fileName}</span>} */}
+        <b style={{ fontSize:13, color:"#1f3864" }}>Downtime Analysis</b>
+        {loaded && <span style={{ color:"#555", fontSize:11 }}>— {fileName}</span>}
         {loaded && (
           <button onClick={reset} style={{ marginLeft:"auto", fontSize:11, padding:"2px 10px", cursor:"pointer" }}>✕ Reset</button>
         )}
       </div>
 
-      {/* Drop zone */}
       {!loaded && (
         <div
           onDragOver={e=>{e.preventDefault();setDrag(true)}}
@@ -379,7 +458,7 @@ export default function IdleAnalysis() {
             )
           )}
 
-          {/* ══ ONE BLOCK PER HEAD REASON: Down Hrs → Remaining Hrs → % Hrs ══ */}
+          {/* ══ ONE BLOCK PER HEAD REASON ══ */}
           {activeHRs.map(hr => {
             const hrName = hr.charAt(0) + hr.slice(1).toLowerCase();
             const c = HR_COLORS[hr] ?? {
@@ -389,15 +468,12 @@ export default function IdleAnalysis() {
             };
             return (
               <div key={hr}>
-                {/* Down Hrs */}
                 <SectionTitle label={c.label} borderColor={c.sub} />
                 {renderProcessTables(dm[hr] ?? {}, activePks, c.bg, c.sub)}
 
-                {/* Remaining Hrs */}
                 <SectionTitle label={c.remLabel} borderColor={c.remSub} />
                 {renderRemainingTables(hr, activePks, c.remBg, c.remSub)}
 
-                {/* % of Total Hrs */}
                 <SectionTitle label={c.pctLabel} borderColor={c.pctSub} />
                 {renderPercentageTables(hr, activePks, c.pctBg, c.pctSub)}
               </div>
