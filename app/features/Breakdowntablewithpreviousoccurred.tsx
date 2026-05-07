@@ -5,7 +5,7 @@ import * as XLSX from "xlsx";
 
 type CellValue = string | number | boolean | Date | null | undefined;
 type RowData = Record<string, CellValue>;
-type TableData = Record<string, Record<string, string[]>>;
+type TableData = Record<string, Record<string, FormattedCell[]>>;
 type SummaryRow = Record<string, number>;
 type FilterName =
   | "headReason"
@@ -14,6 +14,12 @@ type FilterName =
   | "reasonDesc"
   | "line"
   | "unit";
+
+/** Enriched cell: current entry + optional previous occurrence */
+type FormattedCell = {
+  current: string;
+  previous: string | null; // null = no previous occurrence
+};
 
 type ExcelUploaderProps = {
   title?: string;
@@ -24,6 +30,8 @@ type ExcelUploaderProps = {
 };
 
 const columns = ["NGD", "BCK", "HRR", "VIL-1", "VIL-2", "IBR", "TRC"];
+
+// ─── helpers ────────────────────────────────────────────────────────────────
 
 function extractBreakdownLine(functionalLocation: string) {
   const parts = functionalLocation.split("-");
@@ -45,15 +53,12 @@ function mapPlantToUnit(plant: string) {
 
 function parseExcelDate(excelDate: CellValue): Date | null {
   if (!excelDate) return null;
-
   if (typeof excelDate === "string") {
     const [d, m, y] = excelDate.split("/");
     if (!d || !m || !y) return null;
     return new Date(`${y}-${m}-${d}`);
   }
-
   if (typeof excelDate !== "number") return null;
-
   const date = XLSX.SSF.parse_date_code(excelDate);
   if (!date) return null;
   return new Date(date.y, date.m - 1, date.d);
@@ -62,7 +67,6 @@ function parseExcelDate(excelDate: CellValue): Date | null {
 function formatExcelDate(excelDate: CellValue) {
   const d = parseExcelDate(excelDate);
   if (!d) return "";
-
   return `${String(d.getDate()).padStart(2, "0")}/${String(
     d.getMonth() + 1
   ).padStart(2, "0")}/${d.getFullYear()}`;
@@ -76,26 +80,22 @@ function toTitleCase(text: string) {
     .join(" ");
 }
 
-function formatCell(row: RowData) {
+/** Format the "current" part of the cell (same as original) */
+function formatCurrentCell(row: RowData) {
   const date = formatExcelDate(row["Date"]);
   const dt = row["Total Down Time(Hrs)"];
   const sub = String(row["Sub Head reason"] || "");
   const loss = row["Loss Capacity"];
-
-  return `${date} (${dt} Hrs.) – ${toTitleCase(sub)} (${loss} T) `;
+  return `${date} (${dt} Hrs.) – ${toTitleCase(sub)} (${loss} T)`;
 }
 
 function getPlantAndLine(
   functionalLocation: CellValue,
-  extractLine: (functionalLocation: string) => string
+  extractLine: (fl: string) => string
 ) {
   const text = String(functionalLocation || "");
   const [plant = ""] = text.split("-");
-
-  return {
-    plant,
-    line: extractLine(text),
-  };
+  return { plant, line: extractLine(text) };
 }
 
 function getStringOptions(rows: RowData[], key: string) {
@@ -124,12 +124,13 @@ function getSequentialLineKeys(tableData: TableData) {
       return match ? Number(match[0]) : 0;
     })
   );
-
   return Array.from(
     { length: maxLine },
-    (_, index) => `L${String(index + 1).padStart(2, "0")}`
+    (_, i) => `L${String(i + 1).padStart(2, "0")}`
   );
 }
+
+// ─── MultiCheckDropdown ──────────────────────────────────────────────────────
 
 function MultiCheckDropdown({
   label,
@@ -155,7 +156,7 @@ function MultiCheckDropdown({
   return (
     <div style={{ position: "relative" }}>
       <button
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => setOpen((c) => !c)}
         style={{
           border: "1px solid #d1d5db",
           borderRadius: 4,
@@ -219,7 +220,41 @@ function MultiCheckDropdown({
   );
 }
 
-export default function ExcelUploader({
+// ─── PreviousOccurrenceTag ───────────────────────────────────────────────────
+
+/**
+ * Small inline badge showing "Prev: DD/MM/YYYY (X Hrs.) – SubReason (Y T)"
+ * Styled differently so it's visually distinct from the current entry.
+ */
+function PreviousOccurrenceTag({ text }: { text: string }) {
+  return (
+    <div
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        marginTop: 3,
+        padding: "2px 7px",
+        borderRadius: 3,
+        background: "#fff7e6",
+        border: "1px solid #f0b429",
+        fontSize: 10.5,
+        color: "#7a4f00",
+        lineHeight: 1.4,
+      }}
+    >
+      {/* small clock icon via unicode */}
+      <span style={{ fontSize: 10, opacity: 0.7 }}>🕐</span>
+      <span>
+        <strong style={{ color: "#b36b00" }}>Prev:</strong> {text}
+      </span>
+    </div>
+  );
+}
+
+// ─── Main component ──────────────────────────────────────────────────────────
+
+export default function BreakdownTableWithPreviousOccurred({
   title = "Spinning Analysis",
   reportName = "breakdown",
   extractLine = extractBreakdownLine,
@@ -236,6 +271,84 @@ export default function ExcelUploader({
   const [lineFilter, setLineFilter] = useState<string[]>([]);
   const [unitFilter, setUnitFilter] = useState<string[]>([]);
 
+  // ── Build a lookup: for each (line, unit, subHeadReason) key → sorted dates
+  // This is built from ALL raw rows (unfiltered) so we can always find a
+  // previous occurrence even if it falls outside the current filter window.
+  const previousOccurrenceMap = useMemo(() => {
+    /**
+     * Key: `${line}||${unit}||${subHeadReasonNormalized}`
+     * Value: array of { date: Date; formatted: string } sorted ascending by date
+     */
+    const map = new Map<string, { date: Date; formatted: string }[]>();
+
+    rawRows.forEach((row) => {
+      const { plant, line } = getPlantAndLine(
+        row["Functional Location"],
+        extractLine
+      );
+      const unit = mapPlantToUnit(plant);
+      if (!unit || !line) return;
+
+      const sub = String(row["Sub Head reason"] || "").trim().toLowerCase();
+      if (!sub) return;
+
+      const date = parseExcelDate(row["Date"]);
+      if (!date) return;
+
+      const key = `${line}||${unit}||${sub}`;
+      const entry = {
+        date,
+        formatted: formatCurrentCell(row),
+      };
+
+      if (!map.has(key)) {
+        map.set(key, []);
+      }
+      map.get(key)!.push(entry);
+    });
+
+    // Sort each bucket ascending by date
+    map.forEach((entries) => {
+      entries.sort((a, b) => a.date.getTime() - b.date.getTime());
+    });
+
+    return map;
+  }, [rawRows, extractLine]);
+
+  /**
+   * Given a current row, find the most-recent occurrence of the same
+   * (line, unit, subHeadReason) that happened STRICTLY BEFORE this row's date.
+   * Returns the formatted string or null.
+   */
+  const findPreviousOccurrence = (row: RowData): string | null => {
+    const { plant, line } = getPlantAndLine(
+      row["Functional Location"],
+      extractLine
+    );
+    const unit = mapPlantToUnit(plant);
+    if (!unit || !line) return null;
+
+    const sub = String(row["Sub Head reason"] || "").trim().toLowerCase();
+    if (!sub) return null;
+
+    const currentDate = parseExcelDate(row["Date"]);
+    if (!currentDate) return null;
+
+    const key = `${line}||${unit}||${sub}`;
+    const bucket = previousOccurrenceMap.get(key);
+    if (!bucket) return null;
+
+    // Find all entries strictly before currentDate, pick the latest one
+    const earlier = bucket.filter(
+      (e) => e.date.getTime() < currentDate.getTime()
+    );
+    if (earlier.length === 0) return null;
+
+    return earlier[earlier.length - 1].formatted;
+  };
+
+  // ── Filtering (identical logic to original) ──────────────────────────────
+
   const {
     filteredRows,
     headReasonOptions,
@@ -246,56 +359,53 @@ export default function ExcelUploader({
     unitOptions,
   } = useMemo(() => {
     const matchesFilters = (row: RowData, ignoredFilters: FilterName[] = []) => {
-      const { plant, line } = getPlantAndLine(row["Functional Location"], extractLine);
+      const { plant, line } = getPlantAndLine(
+        row["Functional Location"],
+        extractLine
+      );
       const unit = mapPlantToUnit(plant);
 
       if (
         !ignoredFilters.includes("line") &&
         lineFilter.length &&
         !lineFilter.includes(line)
-      ) {
+      )
         return false;
-      }
 
       if (
         !ignoredFilters.includes("unit") &&
         unitFilter.length &&
         (!unit || !unitFilter.includes(unit))
-      ) {
+      )
         return false;
-      }
 
       if (
         !ignoredFilters.includes("headReason") &&
         headReason.length &&
         !headReason.includes(String(row["Head reason"] || ""))
-      ) {
+      )
         return false;
-      }
 
       if (
         !ignoredFilters.includes("section") &&
         section.length &&
         !section.includes(String(row["Section"] || ""))
-      ) {
+      )
         return false;
-      }
 
       if (
         !ignoredFilters.includes("subHeadReason") &&
         subHeadReason.length &&
         !subHeadReason.includes(String(row["Sub Head reason"] || ""))
-      ) {
+      )
         return false;
-      }
 
       if (
         !ignoredFilters.includes("reasonDesc") &&
         reasonDesc.length &&
         !reasonDesc.includes(String(row["Reason Desc"] || ""))
-      ) {
+      )
         return false;
-      }
 
       if (dateFrom || dateTo) {
         const date = parseExcelDate(row["Date"]);
@@ -307,30 +417,30 @@ export default function ExcelUploader({
       return true;
     };
 
-    
-
     const getRowsForOptions = (ignoredFilters: FilterName[]) =>
       rawRows.filter((row) => matchesFilters(row, ignoredFilters));
 
     const getLineOptions = (rows: RowData[]) => {
       const lines = rows
-        .map((row) => getPlantAndLine(row["Functional Location"], extractLine).line)
+        .map(
+          (row) =>
+            getPlantAndLine(row["Functional Location"], extractLine).line
+        )
         .filter(Boolean);
-
       return sortLineKeys([...new Set([...lines, ...lineFilter])]);
     };
 
     const getUnitOptions = (rows: RowData[]) => {
       const units = rows
         .map((row) => {
-          const { plant } = getPlantAndLine(row["Functional Location"], extractLine);
+          const { plant } = getPlantAndLine(
+            row["Functional Location"],
+            extractLine
+          );
           return mapPlantToUnit(plant);
         })
-        .filter((unit): unit is string => Boolean(unit));
-
-      return columns.filter(
-        (column) => units.includes(column) || unitFilter.includes(column)
-      );
+        .filter((u): u is string => Boolean(u));
+      return columns.filter((c) => units.includes(c) || unitFilter.includes(c));
     };
 
     return {
@@ -366,35 +476,12 @@ export default function ExcelUploader({
     dateFrom,
     dateTo,
   ]);
+
   const visibleColumns = unitFilter.length
-    ? columns.filter((column) => unitFilter.includes(column))
+    ? columns.filter((c) => unitFilter.includes(c))
     : columns;
 
-    useEffect(() => {
-      console.log("Selected Filters:", {
-        headReason,
-        section,
-        subHeadReason,
-        reasonDesc,
-        lineFilter,
-        unitFilter,
-        dateFrom,
-        dateTo,
-      });
-    }, [
-      headReason,
-      section,
-      subHeadReason,
-      reasonDesc,
-      lineFilter,
-      unitFilter,
-      dateFrom,
-      dateTo,
-    ]);
-
-    useEffect(() => {
-      console.log("Filtered Rows:", filteredRows);
-    }, [filteredRows]);
+  // ── Build table data with previous occurrence enrichment ─────────────────
 
   const tableData = useMemo(() => {
     const result: TableData = {};
@@ -405,37 +492,38 @@ export default function ExcelUploader({
         extractLine
       );
       const unit = mapPlantToUnit(plant);
-
       if (!unit || !line) return;
 
       if (!result[line]) {
         result[line] = {};
-        columns.forEach((column) => {
-          result[line][column] = [];
+        columns.forEach((c) => {
+          result[line][c] = [];
         });
       }
 
-      result[line][unit].push(formatCell(row));
+      const current = formatCurrentCell(row);
+      const previous = findPreviousOccurrence(row);
+
+      result[line][unit].push({ current, previous });
     });
 
     return result;
-  }, [filteredRows, extractLine]);
+  }, [filteredRows, extractLine, findPreviousOccurrence]);
+
+  // ── Summary rows ─────────────────────────────────────────────────────────
 
   const { freqRow, hrsRow } = useMemo(() => {
     const freq: SummaryRow = {};
     const hrs: SummaryRow = {};
-
-    columns.forEach((column) => {
-      freq[column] = 0;
-      hrs[column] = 0;
+    columns.forEach((c) => {
+      freq[c] = 0;
+      hrs[c] = 0;
     });
 
     filteredRows.forEach((row) => {
       const { plant } = getPlantAndLine(row["Functional Location"], extractLine);
       const unit = mapPlantToUnit(plant);
-
       if (!unit) return;
-
       freq[unit]++;
       hrs[unit] += parseFloat(String(row["Total Down Time(Hrs)"] || "")) || 0;
     });
@@ -444,16 +532,12 @@ export default function ExcelUploader({
   }, [filteredRows, extractLine]);
 
   const lineKeys = useMemo(() => {
-    if (lineFilter.length) {
-      return sortLineKeys(Object.keys(tableData));
-    }
-
-    if (lineMode === "sequential") {
-      return getSequentialLineKeys(tableData);
-    }
-
+    if (lineFilter.length) return sortLineKeys(Object.keys(tableData));
+    if (lineMode === "sequential") return getSequentialLineKeys(tableData);
     return sortLineKeys(Object.keys(tableData));
   }, [tableData, lineMode, lineFilter]);
+
+  // ── Handlers ─────────────────────────────────────────────────────────────
 
   const resetFilters = () => {
     setHeadReason([]);
@@ -483,13 +567,7 @@ export default function ExcelUploader({
     if (file) handleFile(file);
   };
 
-  const inputStyle: React.CSSProperties = {
-    border: "1px solid #d1d5db",
-    borderRadius: 4,
-    padding: "4px 8px",
-    fontSize: 12,
-    background: "white",
-  };
+  // ── Export helpers (export only the current text, no previous tag) ───────
 
   function buildExportRows() {
     const rows: string[][] = [];
@@ -498,27 +576,34 @@ export default function ExcelUploader({
     lineKeys.forEach((line) => {
       const row = tableData[line];
       const maxLen = Math.max(
-        ...visibleColumns.map((column) => row?.[column]?.length || 0)
+        ...visibleColumns.map((c) => row?.[c]?.length || 0)
       );
 
-      for (let index = 0; index < Math.max(1, maxLen); index++) {
+      for (let i = 0; i < Math.max(1, maxLen); i++) {
         rows.push([
-          index === 0
+          i === 0
             ? [line, ...(lineDetails[line] || [])].join("\n")
             : "",
-          ...visibleColumns.map((column) => row?.[column]?.[index] || ""),
+          ...visibleColumns.map((c) => {
+            const cell = row?.[c]?.[i];
+            if (!cell) return "";
+            // Append previous info as plain text in export
+            return cell.previous
+              ? `${cell.current}\n(Prev: ${cell.previous})`
+              : cell.current;
+          }),
         ]);
       }
     });
 
     rows.push([
       "DT – (Freq.)",
-      ...visibleColumns.map((column) => String(freqRow[column] || "")),
+      ...visibleColumns.map((c) => String(freqRow[c] || "")),
     ]);
     rows.push([
       "DT – (Hrs.)",
-      ...visibleColumns.map((column) =>
-        hrsRow[column] ? hrsRow[column].toFixed(2) : ""
+      ...visibleColumns.map((c) =>
+        hrsRow[c] ? hrsRow[c].toFixed(2) : ""
       ),
     ]);
 
@@ -536,11 +621,20 @@ export default function ExcelUploader({
     const text = buildExportRows()
       .map((row) => row.join("\t"))
       .join("\n");
-
     navigator.clipboard
       .writeText(text)
       .then(() => alert("Copied! Paste directly into Excel."));
   }
+
+  const inputStyle: React.CSSProperties = {
+    border: "1px solid #d1d5db",
+    borderRadius: 4,
+    padding: "4px 8px",
+    fontSize: 12,
+    background: "white",
+  };
+
+  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div
@@ -551,12 +645,7 @@ export default function ExcelUploader({
         width: "100%",
       }}
     >
-      <div
-        style={{
-          margin: "24px auto",
-          padding: "0 16px",
-        }}
-      >
+      <div style={{ margin: "24px auto", padding: "0 16px" }}>
         <h1
           style={{
             fontSize: 22,
@@ -568,10 +657,11 @@ export default function ExcelUploader({
           {title}
         </h1>
 
+        {/* ── Upload zone ── */}
         {rawRows.length === 0 && (
           <div
             onDrop={handleDrop}
-            onDragOver={(event) => event.preventDefault()}
+            onDragOver={(e) => e.preventDefault()}
             style={{
               border: "2px dashed #c0392b",
               borderRadius: 8,
@@ -586,8 +676,8 @@ export default function ExcelUploader({
               const input = document.createElement("input");
               input.type = "file";
               input.accept = ".xlsx,.xls";
-              input.onchange = (event) => {
-                const target = event.target as HTMLInputElement;
+              input.onchange = (e) => {
+                const target = e.target as HTMLInputElement;
                 if (target.files?.[0]) handleFile(target.files[0]);
               };
               input.click();
@@ -599,6 +689,7 @@ export default function ExcelUploader({
 
         {rawRows.length > 0 && (
           <>
+            {/* ── Re-upload button ── */}
             <div
               style={{
                 display: "flex",
@@ -625,6 +716,7 @@ export default function ExcelUploader({
               </button>
             </div>
 
+            {/* ── Filter bar ── */}
             <div
               style={{
                 background: "white",
@@ -638,12 +730,9 @@ export default function ExcelUploader({
                 boxShadow: "0 1px 4px rgba(0,0,0,0.07)",
               }}
             >
-              <strong
-                style={{ color: "#c0392b", fontSize: 13, marginRight: 4 }}
-              >
+              <strong style={{ color: "#c0392b", fontSize: 13, marginRight: 4 }}>
                 Filters:
               </strong>
-
               <MultiCheckDropdown
                 label="Head Reason"
                 options={headReasonOptions}
@@ -687,7 +776,7 @@ export default function ExcelUploader({
                   type="date"
                   style={inputStyle}
                   value={dateFrom}
-                  onChange={(event) => setDateFrom(event.target.value)}
+                  onChange={(e) => setDateFrom(e.target.value)}
                 />
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
@@ -696,7 +785,7 @@ export default function ExcelUploader({
                   type="date"
                   style={inputStyle}
                   value={dateTo}
-                  onChange={(event) => setDateTo(event.target.value)}
+                  onChange={(e) => setDateTo(e.target.value)}
                 />
               </div>
 
@@ -730,7 +819,6 @@ export default function ExcelUploader({
                 >
                   Export Excel
                 </button>
-
                 <button
                   onClick={copyAsExcel}
                   style={{
@@ -748,6 +836,36 @@ export default function ExcelUploader({
               </div>
             </div>
 
+            {/* ── Legend ── */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                marginBottom: 8,
+                fontSize: 11,
+                color: "#666",
+              }}
+            >
+              <div
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  padding: "2px 7px",
+                  borderRadius: 3,
+                  background: "#fff7e6",
+                  border: "1px solid #f0b429",
+                  fontSize: 10.5,
+                  color: "#7a4f00",
+                }}
+              >
+                🕐 <strong style={{ color: "#b36b00" }}>Prev:</strong> previous
+                occurrence (same Line + Unit + Sub Head Reason)
+              </div>
+            </div>
+
+            {/* ── Table ── */}
             <div
               style={{
                 overflowX: "auto",
@@ -775,9 +893,9 @@ export default function ExcelUploader({
                     >
                       Unit
                     </th>
-                    {visibleColumns.map((column) => (
+                    {visibleColumns.map((col) => (
                       <th
-                        key={column}
+                        key={col}
                         style={{
                           border: "1px solid #ddd",
                           padding: "8px 12px",
@@ -785,28 +903,31 @@ export default function ExcelUploader({
                           fontWeight: "bold",
                         }}
                       >
-                        {column}
+                        {col}
                       </th>
                     ))}
                   </tr>
                 </thead>
+
                 <tbody>
-                  {lineKeys.map((lineKey, index) => {
+                  {lineKeys.map((lineKey, idx) => {
                     const row = tableData[lineKey];
 
                     return (
                       <tr
                         key={lineKey}
                         style={{
-                          background: index % 2 === 0 ? "white" : "#fdf6f5",
+                          background: idx % 2 === 0 ? "white" : "#fdf6f5",
                         }}
                       >
+                        {/* Line cell */}
                         <td
                           style={{
                             border: "1px solid #ddd",
                             padding: "6px 12px",
                             fontWeight: "bold",
                             color: "#333",
+                            verticalAlign: "top",
                           }}
                         >
                           <div>{lineKey}</div>
@@ -825,18 +946,33 @@ export default function ExcelUploader({
                             </div>
                           ))}
                         </td>
-                        {visibleColumns.map((column) => (
+
+                        {/* Data cells */}
+                        {visibleColumns.map((col) => (
                           <td
-                            key={column}
+                            key={col}
                             style={{
                               border: "1px solid #ddd",
                               padding: "6px 12px",
                               verticalAlign: "top",
                             }}
                           >
-                            {row?.[column]?.map((item, itemIndex) => (
-                              <div key={itemIndex} style={{ marginBottom: 2 }}>
-                                {item}
+                            {row?.[col]?.map((cell, cellIdx) => (
+                              <div
+                                key={cellIdx}
+                                style={{
+                                  marginBottom: cell.previous ? 6 : 2,
+                                }}
+                              >
+                                {/* Current breakdown entry */}
+                                <div style={{ lineHeight: 1.5 }}>
+                                  {cell.current}
+                                </div>
+
+                                {/* Previous occurrence badge (only if exists) */}
+                                {cell.previous && (
+                                  <PreviousOccurrenceTag text={cell.previous} />
+                                )}
                               </div>
                             ))}
                           </td>
@@ -845,42 +981,40 @@ export default function ExcelUploader({
                     );
                   })}
 
+                  {/* Summary: Frequency */}
                   <tr style={{ background: "#f0d6f5", fontWeight: "bold" }}>
-                    <td
-                      style={{ border: "1px solid #ddd", padding: "6px 12px" }}
-                    >
+                    <td style={{ border: "1px solid #ddd", padding: "6px 12px" }}>
                       DT – (Freq.)
                     </td>
-                    {visibleColumns.map((column) => (
+                    {visibleColumns.map((col) => (
                       <td
-                        key={column}
+                        key={col}
                         style={{
                           border: "1px solid #ddd",
                           padding: "6px 12px",
                           textAlign: "center",
                         }}
                       >
-                        {freqRow[column] || ""}
+                        {freqRow[col] || ""}
                       </td>
                     ))}
                   </tr>
 
+                  {/* Summary: Hours */}
                   <tr style={{ background: "#f0d6f5", fontWeight: "bold" }}>
-                    <td
-                      style={{ border: "1px solid #ddd", padding: "6px 12px" }}
-                    >
+                    <td style={{ border: "1px solid #ddd", padding: "6px 12px" }}>
                       DT – (Hrs.)
                     </td>
-                    {visibleColumns.map((column) => (
+                    {visibleColumns.map((col) => (
                       <td
-                        key={column}
+                        key={col}
                         style={{
                           border: "1px solid #ddd",
                           padding: "6px 12px",
                           textAlign: "center",
                         }}
                       >
-                        {hrsRow[column] ? hrsRow[column].toFixed(2) : ""}
+                        {hrsRow[col] ? hrsRow[col].toFixed(2) : ""}
                       </td>
                     ))}
                   </tr>

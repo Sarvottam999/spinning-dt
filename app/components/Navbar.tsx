@@ -9,6 +9,7 @@ const navItems = [
   { href: "/auxilary-recovery", label: "Auxilary&Recovery" },
   { href: "/acid-plant", label: "Acid Plant" },
   { href: "/cs2", label: "CS2" },
+  { href: "/breakdown-with-accurance", label: "Breakdown With Accurance" },
 ];
 
 export default function Navbar() {
