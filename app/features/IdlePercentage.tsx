@@ -66,11 +66,11 @@ const SEC_MAP: Record<string,string> = {
 const HEAD_REASON_ORDER = ["IDLE","PLANNED","UNPLANNED","OTHERS"];
 
 // Colors per head reason section label
-const HR_COLORS: Record<string,{bg:string,sub:string,label:string}> = {
-  IDLE:      { bg:"#fce4d6", sub:"#f4b183", label:"Idle Hrs."      },
-  PLANNED:   { bg:"#e2efda", sub:"#a9d18e", label:"Planned Hrs."   },
-  UNPLANNED: { bg:"#fff2cc", sub:"#ffd966", label:"Unplanned Hrs." },
-  OTHERS:    { bg:"#ededed", sub:"#bfbfbf", label:"Others Hrs."    },
+const HR_COLORS: Record<string,{bg:string,sub:string,label:string,remBg:string,remSub:string,remLabel:string}> = {
+  IDLE:      { bg:"#fce4d6", sub:"#f4b183", label:"Idle Hrs.",           remBg:"#fdf3ee", remSub:"#f9cdb0", remLabel:"Remaining Hrs. (after Idle)"      },
+  PLANNED:   { bg:"#e2efda", sub:"#a9d18e", label:"Planned Hrs.",        remBg:"#f0f7eb", remSub:"#c6e3b1", remLabel:"Remaining Hrs. (after Planned)"   },
+  UNPLANNED: { bg:"#fff2cc", sub:"#ffd966", label:"Unplanned Hrs.",      remBg:"#fffae5", remSub:"#ffe99a", remLabel:"Remaining Hrs. (after Unplanned)" },
+  OTHERS:    { bg:"#ededed", sub:"#bfbfbf", label:"Others Hrs.",         remBg:"#f5f5f5", remSub:"#d6d6d6", remLabel:"Remaining Hrs. (after Others)"    },
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -178,7 +178,7 @@ export default function IdleAnalysis() {
   const num:  React.CSSProperties = { ...base, textAlign:"right" };
   const hdr:  React.CSSProperties = { ...base, textAlign:"center", fontWeight:700 };
 
-  // ── Reusable: render one set of process sub-tables for a given data map ──
+  // ── Reusable: render one set of process sub-tables for a given data map (Down Hrs) ──
   function renderProcessTables(
     dataMap: Record<number, Record<string, Record<string, number>>>,
     pks: string[],
@@ -216,6 +216,60 @@ export default function IdleAnalysis() {
               })}
             </tr>
           ))}
+        </tbody>
+      </table>
+    ));
+  }
+
+  // ── NEW: render Remaining Hrs tables for a specific head reason ──
+  // Remaining = Total Hrs (mc × days × 24) − down hrs for THIS head reason only
+  function renderRemainingTables(
+    hr: string,
+    pks: string[],
+    bgColor: string,
+    subColor: string
+  ) {
+    return pks.map(pk => (
+      <table key={pk} style={{ borderCollapse:"collapse", marginBottom:8 }}>
+        <thead>
+          <tr>
+            <td style={{...hdr, background:bgColor, textAlign:"left", minWidth:65}} colSpan={2}>{PL[pk]}</td>
+            {months.map(mk => (
+              <th key={mk.label} style={{...hdr, background:bgColor, minWidth:52}}>{mk.label}</th>
+            ))}
+          </tr>
+          <tr>
+            <td style={{...base, background:subColor}} colSpan={2}></td>
+            {months.map(mk => (
+              <td key={mk.label} style={{...num, background:subColor, textAlign:"center", color:"#555", fontSize:10}}>{mk.days}</td>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {UNITS.map((u, i) => {
+            const mc = MC[u.name]?.[pk] ?? 0;
+            return (
+              <tr key={u.name} style={{background:i%2===1?"#f2f2f2":"#fff"}}>
+                <td style={{...base, textAlign:"left", fontWeight:600, minWidth:55}}>{u.name}</td>
+                <td style={{...num, textAlign:"center", color:"#555", minWidth:45}}>{u.plant}</td>
+                {months.map(mk => {
+                  const total     = mc * mk.days * 24;
+                  // Only subtract THIS head reason's down hours
+                  const downForHR = dm[hr]?.[u.plant]?.[pk]?.[mk.label] ?? 0;
+                  const remaining = total - downForHR;
+                  const isNeg     = remaining < 0;
+                  return (
+                    <td key={mk.label} style={{...num,
+                      color: total===0 ? "#bbb" : isNeg ? "#c00" : "#000",
+                      fontWeight: isNeg ? 700 : "normal"
+                    }}>
+                      {total===0 ? "-" : remaining.toFixed(2)}
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     ));
@@ -312,7 +366,6 @@ export default function IdleAnalysis() {
                       <td style={{...base, textAlign:"left", fontWeight:600, minWidth:55}}>{u.name}</td>
                       <td style={{...num, textAlign:"center", color:"#555", minWidth:45}}>{u.plant}</td>
                       {months.map(mk => {
-                        // =$D3 * D$13 * 24  →  machineCount × daysInMonth × 24
                         const total = mc * mk.days * 24;
                         return (
                           <td key={mk.label} style={{...num, color: total===0?"#bbb":"#000"}}>
@@ -327,72 +380,32 @@ export default function IdleAnalysis() {
             </table>
           ))}
 
-          {/* ══ ONE BLOCK PER HEAD REASON ══ */}
+          {/* ══ ONE BLOCK PER HEAD REASON: Down Hrs + Remaining Hrs ══ */}
           {activeHRs.map(hr => {
-            const c = HR_COLORS[hr] ?? { bg:"#ededed", sub:"#bfbfbf", label: hr.charAt(0)+hr.slice(1).toLowerCase()+" Hrs." };
+            const c = HR_COLORS[hr] ?? {
+              bg:"#ededed", sub:"#bfbfbf",
+              label: hr.charAt(0)+hr.slice(1).toLowerCase()+" Hrs.",
+              remBg:"#f5f5f5", remSub:"#d6d6d6",
+              remLabel: "Remaining Hrs. (after "+hr.charAt(0)+hr.slice(1).toLowerCase()+")",
+            };
             return (
               <div key={hr}>
+                {/* ── Head Reason Down Hrs ── */}
                 <div style={{ fontWeight:700, fontSize:12, margin:"14px 0 4px", color:"#1f3864",
                   borderBottom:`2px solid ${c.sub}`, paddingBottom:2, display:"inline-block" }}>
                   {c.label}
                 </div>
                 {renderProcessTables(dm[hr] ?? {}, activePks, c.bg, c.sub)}
+
+                {/* ── Remaining Hrs for THIS head reason ── */}
+                <div style={{ fontWeight:700, fontSize:12, margin:"10px 0 4px", color:"#1f3864",
+                  borderBottom:`2px solid ${c.remSub}`, paddingBottom:2, display:"inline-block" }}>
+                  {c.remLabel}
+                </div>
+                {renderRemainingTables(hr, activePks, c.remBg, c.remSub)}
               </div>
             );
           })}
-
-          {/* ══ REMAINING HRS  (formula: Total Hrs − sum of ALL head-reason down hrs) ══ */}
-          <div style={{ fontWeight:700, fontSize:12, margin:"14px 0 4px", color:"#1f3864",
-            borderBottom:"2px solid #7030a0", paddingBottom:2, display:"inline-block" }}>
-            Remaining Hrs.
-          </div>
-          {activePks.map(pk => (
-            <table key={pk} style={{ borderCollapse:"collapse", marginBottom:8 }}>
-              <thead>
-                <tr>
-                  <td style={{...hdr, background:"#e2d0f0", textAlign:"left", minWidth:65}} colSpan={2}>{PL[pk]}</td>
-                  {months.map(mk => (
-                    <th key={mk.label} style={{...hdr, background:"#e2d0f0", minWidth:52}}>{mk.label}</th>
-                  ))}
-                </tr>
-                <tr>
-                  <td style={{...base, background:"#d0b8e8"}} colSpan={2}></td>
-                  {months.map(mk => (
-                    <td key={mk.label} style={{...num, background:"#d0b8e8", textAlign:"center", color:"#555", fontSize:10}}>{mk.days}</td>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {UNITS.map((u, i) => {
-                  const mc = MC[u.name]?.[pk] ?? 0;
-                  return (
-                    <tr key={u.name} style={{background:i%2===1?"#f2f2f2":"#fff"}}>
-                      <td style={{...base, textAlign:"left", fontWeight:600, minWidth:55}}>{u.name}</td>
-                      <td style={{...num, textAlign:"center", color:"#555", minWidth:45}}>{u.plant}</td>
-                      {months.map(mk => {
-                        // Total = machineCount × daysInMonth × 24
-                        const total = mc * mk.days * 24;
-                        // Sum down hrs across ALL head reasons for this unit+process+month
-                        const totalDown = activeHRs.reduce((sum, hr) => {
-                          return sum + (dm[hr]?.[u.plant]?.[pk]?.[mk.label] ?? 0);
-                        }, 0);
-                        const remaining = total - totalDown;
-                        const isNeg = remaining < 0;
-                        return (
-                          <td key={mk.label} style={{...num,
-                            color: total===0 ? "#bbb" : isNeg ? "#c00" : "#000",
-                            fontWeight: isNeg ? 700 : "normal"
-                          }}>
-                            {total===0 ? "-" : remaining.toFixed(2)}
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          ))}
 
         </div>
       )}
