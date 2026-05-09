@@ -134,7 +134,6 @@ async function parseExcel(file: File) {
       if (n === "sub head reason" || n === "subheadreason" || n === "sub reason") r._shr = String(v).trim();
       if (n.includes("total down") || n === "totaldowntime") r._down= Number(v)||0;
     });
-    // derive functional location from UNITS lookup if column absent
     if (!r._floc) {
       const u = UNITS.find(u => u.plant === r._plant);
       r._floc = u ? u.name : String(r._plant);
@@ -234,8 +233,11 @@ function MultiSelect({ label, options, selected, onChange, disabled }: MultiSele
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type DM   = Record<string, Record<number, Record<string, Record<string, number>>>>;
-type SHRM = Record<string, Record<string, Record<number, Record<string, number>>>>;
+// dm[hr][plant][pk][month] = totalDown
+type DM = Record<string, Record<number, Record<string, Record<string, number>>>>;
+
+// shrMap[hr][shr][plant][pk][month] = down  ← NOW PER PK
+type SHRM = Record<string, Record<string, Record<number, Record<string, Record<string, number>>>>>;
 
 interface ParsedRow {
   _d: any; _plant: number; _floc: string; _sec: string; _hr: string; _shr: string; _down: number;
@@ -250,7 +252,6 @@ export default function IdleAnalysis() {
   const [drag, setDrag]       = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  // Filter selections
   const [selFloc,    setSelFloc]    = useState<string[]>([]);
   const [selPlant,   setSelPlant]   = useState<string[]>([]);
   const [selSection, setSelSection] = useState<string[]>([]);
@@ -275,7 +276,7 @@ export default function IdleAnalysis() {
     const f = e.dataTransfer.files[0]; if (f) load(f);
   };
 
-  // ── Cascading filter options (all derived from data) ──────────────────────
+  // ── Cascading filter options ──────────────────────────────────────────────
 
   const allFlocs = useMemo(() =>
     [...new Set(allRows.map(r => r._floc).filter(Boolean))].sort(),
@@ -331,32 +332,36 @@ export default function IdleAnalysis() {
   const months = useMemo(() => getMonths(filteredRows), [filteredRows]);
 
   const { dm, shrMap, activePks, activeHRs } = useMemo(() => {
-    const map: DM = {};
+    const map: DM   = {};
+    // shrMap[hr][shr][plant][pk][month] = down
     const smap: SHRM = {};
 
     filteredRows.forEach((r) => {
       const ymd = parseDateOnly(r._d); if (!ymd) return;
       const lbl = `${String(ymd.m).padStart(2,"0")}/${String(ymd.y).slice(-2)}`;
-      const pk = SEC_MAP[r._sec]; if (!pk) return;
-      const hr = r._hr || "OTHERS";
-      const p  = r._plant;
+      const pk  = SEC_MAP[r._sec]; if (!pk) return;
+      const hr  = r._hr || "OTHERS";
+      const p   = r._plant;
 
+      // ── dm: unchanged ──
       if (!map[hr])        map[hr]        = {};
       if (!map[hr][p])     map[hr][p]     = {};
       if (!map[hr][p][pk]) map[hr][p][pk] = {};
-      map[hr][p][pk][lbl] = (map[hr][p][pk][lbl]||0) + r._down;
+      map[hr][p][pk][lbl] = (map[hr][p][pk][lbl] || 0) + r._down;
 
+      // ── shrMap: now keyed per pk ──
       const shr = r._shr || "Unknown";
-      if (!smap[hr])           smap[hr]           = {};
-      if (!smap[hr][shr])      smap[hr][shr]      = {};
-      if (!smap[hr][shr][p])   smap[hr][shr][p]   = {};
-      smap[hr][shr][p][lbl] = (smap[hr][shr][p][lbl]||0) + r._down;
+      if (!smap[hr])                   smap[hr]                   = {};
+      if (!smap[hr][shr])              smap[hr][shr]              = {};
+      if (!smap[hr][shr][p])           smap[hr][shr][p]           = {};
+      if (!smap[hr][shr][p][pk])       smap[hr][shr][p][pk]       = {};
+      smap[hr][shr][p][pk][lbl] = (smap[hr][shr][p][pk][lbl] || 0) + r._down;
     });
 
-    const seenPks = new Set(filteredRows.map((r:any) => SEC_MAP[r._sec]).filter(Boolean));
+    const seenPks = new Set(filteredRows.map((r: any) => SEC_MAP[r._sec]).filter(Boolean));
     const orderedPks = ALL_KEYS.filter(k => seenPks.has(k));
 
-    const seenHRs = new Set(filteredRows.map((r:any) => r._hr).filter(Boolean));
+    const seenHRs = new Set(filteredRows.map((r: any) => r._hr).filter(Boolean));
     const orderedHRs = [
       ...HEAD_REASON_ORDER.filter(h => seenHRs.has(h)),
       ...[...seenHRs].filter(h => !HEAD_REASON_ORDER.includes(h)).sort(),
@@ -365,7 +370,6 @@ export default function IdleAnalysis() {
     return { dm: map, shrMap: smap, activePks: orderedPks, activeHRs: orderedHRs };
   }, [filteredRows]);
 
-  // Active units filtered by floc/plant selections
   const activeUnits = useMemo(() => {
     if (selFloc.length === 0 && selPlant.length === 0) return UNITS;
     return UNITS.filter(u => {
@@ -375,7 +379,6 @@ export default function IdleAnalysis() {
     });
   }, [selFloc, selPlant]);
 
-  // Cascade handlers — reset downstream on upstream change
   const handleFlocChange    = (v: string[]) => { setSelFloc(v);    setSelPlant([]); setSelSection([]); setSelHR([]); setSelSHR([]); };
   const handlePlantChange   = (v: string[]) => { setSelPlant(v);   setSelSection([]); setSelHR([]); setSelSHR([]); };
   const handleSectionChange = (v: string[]) => { setSelSection(v); setSelHR([]); setSelSHR([]); };
@@ -686,9 +689,67 @@ export default function IdleAnalysis() {
     );
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
   // ── SHR Summary Table ─────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+
   function getFY(mk: MM): string {
     return mk.m >= 4 ? `FY${(mk.y+1).toString().slice(-2)}` : `FY${mk.y.toString().slice(-2)}`;
+  }
+
+  // ── KEY FIX: pctCell now matches renderPercentageTables exactly ──────────
+  //
+  // Formula per pk per month (same as renderPercentageTables):
+  //   pct_pk = shrDown_pk / (total_pk - hrDown_pk) * 100
+  //
+  // For summary we aggregate:
+  //   numerator   = sum over pks where shrDown_pk > 0 of shrDown_pk
+  //   denominator = sum over SAME pks of (total_pk - hrDown_pk)
+  //
+  // By restricting denominator to only pks that have shrDown,
+  // a single-pk case gives exactly the same result as the % table.
+  //
+  function pctCell(
+    hr: string,
+    shr: string | null,   // null = HR total row
+    plant: number,
+    unitName: string,
+    mks: MM[]
+  ): string {
+    let numerator   = 0;
+    let denominator = 0;
+
+    activePks.forEach(pk => {
+      mks.forEach(mk => {
+        const mc    = MC[unitName]?.[pk] ?? 0;
+        const total = mc * mk.days * 24;
+        if (total === 0) return; // machine doesn't exist at this unit
+
+        // shrDown for this pk/month
+        const shrDown = shr === null
+          // HR total row: sum across all SHRs for this pk/month
+          ? Object.values(shrMap[hr] ?? {}).reduce(
+              (s, pkMap) => s + (pkMap[plant]?.[pk]?.[mk.label] ?? 0), 0
+            )
+          // specific SHR row
+          : (shrMap[hr]?.[shr]?.[plant]?.[pk]?.[mk.label] ?? 0);
+
+        // ── CRITICAL: only include this pk in denominator if it has shrDown ──
+        // This ensures the summary % matches the per-pk % table exactly
+        if (shrDown === 0) return;
+
+        const hrDown = dm[hr]?.[plant]?.[pk]?.[mk.label] ?? 0;
+
+        numerator   += shrDown;
+        denominator += (total - hrDown);
+      });
+    });
+
+    if (numerator === 0)   return "-";
+    if (denominator === 0) return "-";
+
+    const pct = (numerator / denominator) * 100;
+    return `${pct.toFixed(3)}%`;
   }
 
   function renderSHRTable() {
@@ -718,39 +779,6 @@ export default function IdleAnalysis() {
     const labelStyle:   React.CSSProperties = { ...base, textAlign:"left", minWidth:160, paddingLeft:6 };
     const hrLabelStyle: React.CSSProperties = { ...base, textAlign:"left", fontWeight:700, minWidth:160, paddingLeft:4 };
     const normsStyle:   React.CSSProperties = { ...base, textAlign:"center", minWidth:40 };
-
-    function sumForMonths(hr: string, shr: string | null, plant: number, mks: MM[]): number {
-      if (shr === null) {
-        return Object.values(shrMap[hr] ?? {}).reduce((tot, plantMap) =>
-          tot + mks.reduce((s, mk) => s + (plantMap[plant]?.[mk.label] ?? 0), 0), 0);
-      }
-      return mks.reduce((s, mk) => s + (shrMap[hr]?.[shr]?.[plant]?.[mk.label] ?? 0), 0);
-    }
-
-    // pctCell: same formula as renderPercentageTables
-    // For each active pk, sum over months: shrDown_pk / (totalHrs_pk - hrDown_pk) * 100
-    // where shrDown_pk = portion of shrDown attributed to that pk (from shrMap per pk)
-    // We match exactly: per-machine remaining = mc*days*24 - hrDown_for_that_pk
-    // shrDown for a specific pk comes from dm[hr][plant][pk][month] for hr-level,
-    // or shrMap[hr][shr][plant][month] split is not per-pk in our data model.
-    // So we use the same aggregate approach as % table:
-    // numerator   = shrDown (total across all pks, as stored)
-    // denominator = sum over activePks of (mc*days*24 - dm[hr][plant][pk][month])
-    function pctCell(shrDown: number, hr: string, plant: number, unitName: string, mks: MM[]): string {
-      if (shrDown === 0) return "-";
-      // denominator: sum of per-machine remaining hrs across activePks and mks
-      const remaining = activePks.reduce((sum, pk) => {
-        return sum + mks.reduce((s, mk) => {
-          const mc      = MC[unitName]?.[pk] ?? 0;
-          const total   = mc * mk.days * 24;
-          const hrDown  = dm[hr]?.[plant]?.[pk]?.[mk.label] ?? 0;
-          return s + Math.max(0, total - hrDown);
-        }, 0);
-      }, 0);
-      if (remaining === 0) return "-";
-      const pct = (shrDown / remaining) * 100;
-      return `${(Math.trunc(pct * 1000) / 1000).toFixed(3)}%`;
-    }
 
     return (
       <table style={{ borderCollapse:"collapse", marginBottom:16 }}>
@@ -791,44 +819,52 @@ export default function IdleAnalysis() {
             const shrs = Object.keys(shrMap[hr] ?? {}).sort();
             const hrColor = HR_ROW_COLORS[hr] ?? { bg:"#bfbfbf", text:"#333" };
             const hrLabel = hr.charAt(0) + hr.slice(1).toLowerCase();
+
             return (
               <React.Fragment key={hr}>
+                {/* ── SHR rows ── */}
                 {shrs.map((shr, si) => (
                   <tr key={`${hr}-${shr}`} style={{background: si%2===0?"#fff":"#f5f5f5"}}>
                     <td style={{...labelStyle, paddingLeft:14, color:"#333"}}>{shr}</td>
                     <td style={normsStyle}>-</td>
                     {activeUnits.map(u => (
                       <React.Fragment key={u.name}>
-                        {fullFYs.map(fy => {
-                          const down = sumForMonths(hr, shr, u.plant, fyMonths[fy]);
-                          return <td key={fy} style={cellStyle}>{pctCell(down, hr, u.plant, u.name, fyMonths[fy])}</td>;
-                        })}
-                        {curMonths.map(mk => {
-                          const down = shrMap[hr]?.[shr]?.[u.plant]?.[mk.label] ?? 0;
-                          return <td key={mk.label} style={cellStyle}>{pctCell(down, hr, u.plant, u.name, [mk])}</td>;
-                        })}
+                        {fullFYs.map(fy => (
+                          <td key={fy} style={cellStyle}>
+                            {pctCell(hr, shr, u.plant, u.name, fyMonths[fy])}
+                          </td>
+                        ))}
+                        {curMonths.map(mk => (
+                          <td key={mk.label} style={cellStyle}>
+                            {pctCell(hr, shr, u.plant, u.name, [mk])}
+                          </td>
+                        ))}
                         <td style={{...cellStyle, background:"#eef3fb"}}>
-                          {pctCell(sumForMonths(hr, shr, u.plant, curMonths), hr, u.plant, u.name, curMonths)}
+                          {pctCell(hr, shr, u.plant, u.name, curMonths)}
                         </td>
                       </React.Fragment>
                     ))}
                   </tr>
                 ))}
+
+                {/* ── HR total row ── */}
                 <tr style={{background: hrColor.bg}}>
                   <td style={{...hrLabelStyle, color: hrColor.text}}>{hrLabel}</td>
                   <td style={{...normsStyle, color: hrColor.text}}>-</td>
                   {activeUnits.map(u => (
                     <React.Fragment key={u.name}>
-                      {fullFYs.map(fy => {
-                        const down = sumForMonths(hr, null, u.plant, fyMonths[fy]);
-                        return <td key={fy} style={{...cellStyle, fontWeight:700, color: hrColor.text}}>{pctCell(down, hr, u.plant, u.name, fyMonths[fy])}</td>;
-                      })}
-                      {curMonths.map(mk => {
-                        const down = Object.values(shrMap[hr] ?? {}).reduce((s, pm) => s + (pm[u.plant]?.[mk.label] ?? 0), 0);
-                        return <td key={mk.label} style={{...cellStyle, fontWeight:700, color: hrColor.text}}>{pctCell(down, hr, u.plant, u.name, [mk])}</td>;
-                      })}
+                      {fullFYs.map(fy => (
+                        <td key={fy} style={{...cellStyle, fontWeight:700, color: hrColor.text}}>
+                          {pctCell(hr, null, u.plant, u.name, fyMonths[fy])}
+                        </td>
+                      ))}
+                      {curMonths.map(mk => (
+                        <td key={mk.label} style={{...cellStyle, fontWeight:700, color: hrColor.text}}>
+                          {pctCell(hr, null, u.plant, u.name, [mk])}
+                        </td>
+                      ))}
                       <td style={{...cellStyle, fontWeight:700, background: hrColor.bg, color: hrColor.text}}>
-                        {pctCell(sumForMonths(hr, null, u.plant, curMonths), hr, u.plant, u.name, curMonths)}
+                        {pctCell(hr, null, u.plant, u.name, curMonths)}
                       </td>
                     </React.Fragment>
                   ))}
@@ -910,7 +946,7 @@ export default function IdleAnalysis() {
             <SectionTitle label="Machine Count" borderColor="#4472c4" />
             {renderMachineCountTable()}
 
-            {/* ══ SUB HEAD REASON SUMMARY — above Total Hrs ══ */}
+            {/* ══ SUB HEAD REASON SUMMARY ══ */}
             <SectionTitle label="Sub Head Reason Summary" borderColor="#4472c4" />
             {renderSHRTable()}
 
