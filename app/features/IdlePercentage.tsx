@@ -511,7 +511,9 @@ export default function IdleAnalysis() {
                     const mc        = MC[u.name]?.[k] ?? 0;
                     const total     = mc * mk.days * 24;
                     const downForHR = dm[hr]?.[u.plant]?.[k]?.[mk.label] ?? 0;
-                    const pct       = total === 0 ? null : (downForHR / total) * 100;
+                    // const pct    = total === 0 ? null : (downForHR / total) * 100;
+                    const remaining = total - downForHR;
+                    const pct       = remaining === 0 ? null : (downForHR / remaining) * 100;
                     const isHigh    = pct !== null && pct > 100;
                     const isEmpty   = pct === null || pct === 0;
                     return (
