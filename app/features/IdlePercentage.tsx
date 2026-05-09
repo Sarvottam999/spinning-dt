@@ -727,23 +727,27 @@ export default function IdleAnalysis() {
       return mks.reduce((s, mk) => s + (shrMap[hr]?.[shr]?.[plant]?.[mk.label] ?? 0), 0);
     }
 
-    function totalHrsForMonths(unitName: string, mks: MM[]): number {
-      return activePks.reduce((sum, pk) => {
-        const mc = MC[unitName]?.[pk] ?? 0;
-        return sum + mks.reduce((s, mk) => s + mc * mk.days * 24, 0);
-      }, 0);
-    }
-
-    function hrTotalDown(hr: string, plant: number, mks: MM[]): number {
-      return Object.values(shrMap[hr] ?? {}).reduce((tot, plantMap) =>
-        tot + mks.reduce((s, mk) => s + (plantMap[plant]?.[mk.label] ?? 0), 0), 0);
-    }
-
+    // pctCell: same formula as renderPercentageTables
+    // For each active pk, sum over months: shrDown_pk / (totalHrs_pk - hrDown_pk) * 100
+    // where shrDown_pk = portion of shrDown attributed to that pk (from shrMap per pk)
+    // We match exactly: per-machine remaining = mc*days*24 - hrDown_for_that_pk
+    // shrDown for a specific pk comes from dm[hr][plant][pk][month] for hr-level,
+    // or shrMap[hr][shr][plant][month] split is not per-pk in our data model.
+    // So we use the same aggregate approach as % table:
+    // numerator   = shrDown (total across all pks, as stored)
+    // denominator = sum over activePks of (mc*days*24 - dm[hr][plant][pk][month])
     function pctCell(shrDown: number, hr: string, plant: number, unitName: string, mks: MM[]): string {
-      const total     = totalHrsForMonths(unitName, mks);
-      const hrDown    = hrTotalDown(hr, plant, mks);
-      const remaining = total - hrDown;
-      if (remaining === 0 || shrDown === 0) return "-";
+      if (shrDown === 0) return "-";
+      // denominator: sum of per-machine remaining hrs across activePks and mks
+      const remaining = activePks.reduce((sum, pk) => {
+        return sum + mks.reduce((s, mk) => {
+          const mc      = MC[unitName]?.[pk] ?? 0;
+          const total   = mc * mk.days * 24;
+          const hrDown  = dm[hr]?.[plant]?.[pk]?.[mk.label] ?? 0;
+          return s + Math.max(0, total - hrDown);
+        }, 0);
+      }, 0);
+      if (remaining === 0) return "-";
       const pct = (shrDown / remaining) * 100;
       return `${(Math.trunc(pct * 1000) / 1000).toFixed(3)}%`;
     }
