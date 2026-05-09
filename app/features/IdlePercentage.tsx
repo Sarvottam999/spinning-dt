@@ -521,7 +521,7 @@ export default function IdleAnalysis() {
                         color: isEmpty?"#bbb":isHigh?"#c00":"#000",
                         fontWeight: isHigh?700:"normal"
                       }}>
-                        {isEmpty ? "-" : `${pct!.toFixed(2)}%`}
+                        {isEmpty ? "-" : `${pct!.toFixed(3)}%`}
                       </td>
                     );
                   })
