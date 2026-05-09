@@ -604,6 +604,32 @@ export default function IdleAnalysis() {
       return mks.reduce((s, mk) => s + (shrMap[hr]?.[shr]?.[plant]?.[mk.label] ?? 0), 0);
     }
 
+    // totalHrs for a set of months = sum of (MC[unit][pk] * days * 24) across all active pks
+    function totalHrsForMonths(unitName: string, mks: MM[]): number {
+      return activePks.reduce((sum, pk) => {
+        const mc = MC[unitName]?.[pk] ?? 0;
+        return sum + mks.reduce((s, mk) => s + mc * mk.days * 24, 0);
+      }, 0);
+    }
+
+    // HR total downtime for a plant across a set of months (sum of all SHRs)
+    function hrTotalDown(hr: string, plant: number, mks: MM[]): number {
+      return Object.values(shrMap[hr] ?? {}).reduce((tot, plantMap) => {
+        return tot + mks.reduce((s, mk) => s + (plantMap[plant]?.[mk.label] ?? 0), 0);
+      }, 0);
+    }
+
+    // pct formula: (shrDown / remaining) * 100
+    // where remaining = totalHrs - hrTotalDown (NOT shrDown)
+    function pctCell(shrDown: number, hr: string, plant: number, unitName: string, mks: MM[]): string {
+      const total     = totalHrsForMonths(unitName, mks);
+      const hrDown    = hrTotalDown(hr, plant, mks);
+      const remaining = total - hrDown;
+      if (remaining === 0 || shrDown === 0) return "-";
+      const pct = (shrDown / remaining) * 100;
+      return `${(Math.trunc(pct * 1000) / 1000).toFixed(3)}%`;
+    }
+
     function fmtV(v: number) { return v === 0 ? "-" : v.toFixed(2); }
 
     return (
@@ -658,16 +684,16 @@ export default function IdleAnalysis() {
                     {UNITS.map(u => (
                       <React.Fragment key={u.name}>
                         {fullFYs.map(fy => {
-                          const v = sumForMonths(hr, shr, u.plant, fyMonths[fy]);
-                          return <td key={fy} style={cellStyle}>{fmtV(v)}</td>;
+                          const down = sumForMonths(hr, shr, u.plant, fyMonths[fy]);
+                          return <td key={fy} style={cellStyle}>{pctCell(down, hr, u.plant, u.name, fyMonths[fy])}</td>;
                         })}
                         {curMonths.map(mk => {
-                          const v = shrMap[hr]?.[shr]?.[u.plant]?.[mk.label] ?? 0;
-                          return <td key={mk.label} style={cellStyle}>{fmtV(v)}</td>;
+                          const down = shrMap[hr]?.[shr]?.[u.plant]?.[mk.label] ?? 0;
+                          return <td key={mk.label} style={cellStyle}>{pctCell(down, hr, u.plant, u.name, [mk])}</td>;
                         })}
-                        {/* UTD Avg = total for current FY / number of months so far */}
+                        {/* UTD Avg */}
                         <td style={{...cellStyle, background:"#eef3fb"}}>
-                          {fmtV(sumForMonths(hr, shr, u.plant, curMonths) / (curMonths.length || 1))}
+                          {pctCell(sumForMonths(hr, shr, u.plant, curMonths), hr, u.plant, u.name, curMonths)}
                         </td>
                       </React.Fragment>
                     ))}
@@ -680,15 +706,15 @@ export default function IdleAnalysis() {
                   {UNITS.map(u => (
                     <React.Fragment key={u.name}>
                       {fullFYs.map(fy => {
-                        const v = sumForMonths(hr, null, u.plant, fyMonths[fy]);
-                        return <td key={fy} style={{...cellStyle, fontWeight:700, color: hrColor.text}}>{fmtV(v)}</td>;
+                        const down = sumForMonths(hr, null, u.plant, fyMonths[fy]);
+                        return <td key={fy} style={{...cellStyle, fontWeight:700, color: hrColor.text}}>{pctCell(down, hr, u.plant, u.name, fyMonths[fy])}</td>;
                       })}
                       {curMonths.map(mk => {
-                        const v = Object.values(shrMap[hr] ?? {}).reduce((s, pm) => s + (pm[u.plant]?.[mk.label] ?? 0), 0);
-                        return <td key={mk.label} style={{...cellStyle, fontWeight:700, color: hrColor.text}}>{fmtV(v)}</td>;
+                        const down = Object.values(shrMap[hr] ?? {}).reduce((s, pm) => s + (pm[u.plant]?.[mk.label] ?? 0), 0);
+                        return <td key={mk.label} style={{...cellStyle, fontWeight:700, color: hrColor.text}}>{pctCell(down, hr, u.plant, u.name, [mk])}</td>;
                       })}
                       <td style={{...cellStyle, fontWeight:700, background: hrColor.bg, color: hrColor.text}}>
-                        {fmtV(sumForMonths(hr, null, u.plant, curMonths) / (curMonths.length || 1))}
+                        {pctCell(sumForMonths(hr, null, u.plant, curMonths), hr, u.plant, u.name, curMonths)}
                       </td>
                     </React.Fragment>
                   ))}
