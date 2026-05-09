@@ -77,80 +77,31 @@ function dim(y: number, m: number) { return new Date(y, m, 0).getDate(); }
 
 interface YMD { y: number; m: number; d: number }
 
-/**
- * Parse a value from the "Date" column into a YMD.
- *
- * Strategy: read with cellDates:false so XLSX never creates a Date object.
- * We then handle three cases:
- *   1. Numeric serial  → floor to strip any fractional time, convert via UTC
- *   2. String DD/MM/YYYY or YYYY-MM-DD  → parse directly, no timezone involved
- *   3. Anything else   → return null
- *
- * We deliberately NEVER use Date.getFullYear/getMonth/getDate on a UTC-epoch
- * Date, because that introduces the IST (+05:30) timezone shift that was
- * causing April 30 23:59 → May 1.
- */
 function parseDateOnly(v: any): YMD | null {
   if (v === null || v === undefined || v === "") return null;
 
-  // ── Case 1: numeric Excel serial ──────────────────────────────────────────
   if (typeof v === "number") {
-    // Floor strips fractional time (e.g. 46941.9999 → 46941 = Apr 30)
     const serial = Math.floor(v);
-    // Excel epoch: Jan 1 1900 = serial 1 (with the Lotus 1-2-3 leap-year bug)
-    const ms = (serial - 25569) * 86400000; // 25569 = days from 1900-01-01 to 1970-01-01
+    const ms = (serial - 25569) * 86400000;
     const y = new Date(ms).getUTCFullYear();
     const m = new Date(ms).getUTCMonth() + 1;
     const d = new Date(ms).getUTCDate();
-    console.log(`[parseDateOnly] numeric serial ${v} → floored ${serial} → ${y}-${m}-${d}`);
     return { y, m, d };
   }
 
-  // ── Case 2: string ────────────────────────────────────────────────────────
   if (typeof v === "string") {
     const s = v.trim();
-
-    // DD/MM/YYYY  or  DD-MM-YYYY
     const dmy = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
-    if (dmy) {
-      const result = { d: +dmy[1], m: +dmy[2], y: +dmy[3] };
-      console.log(`[parseDateOnly] DD/MM/YYYY string "${s}" →`, result);
-      return result;
-    }
-
-    // YYYY-MM-DD  (ISO)
+    if (dmy) return { d: +dmy[1], m: +dmy[2], y: +dmy[3] };
     const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
-    if (iso) {
-      const result = { y: +iso[1], m: +iso[2], d: +iso[3] };
-      console.log(`[parseDateOnly] ISO string "${s}" →`, result);
-      return result;
-    }
-
-    // MM/DD/YYYY  (US format — fallback)
-    const mdy = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
-    if (mdy && +mdy[1] <= 12 && +mdy[2] <= 31) {
-      // Ambiguous — prefer DD/MM already handled above; if we reach here it
-      // didn't match the first pattern, so try US
-      const result = { m: +mdy[1], d: +mdy[2], y: +mdy[3] };
-      console.log(`[parseDateOnly] MM/DD/YYYY string "${s}" →`, result);
-      return result;
-    }
-
-    console.warn(`[parseDateOnly] unrecognised string: "${s}"`);
+    if (iso) return { y: +iso[1], m: +iso[2], d: +iso[3] };
     return null;
   }
 
-  // ── Case 3: Date object (should not happen with cellDates:false, but guard) ─
   if (v instanceof Date) {
-    // Use LOCAL getters — this is what the user sees in Excel on their machine
-    const y = v.getFullYear();
-    const m = v.getMonth() + 1;
-    const d = v.getDate();
-    console.log(`[parseDateOnly] Date object ${v.toString()} → local ${y}-${m}-${d}`);
-    return { y, m, d };
+    return { y: v.getFullYear(), m: v.getMonth() + 1, d: v.getDate() };
   }
 
-  console.warn("[parseDateOnly] unrecognised type:", typeof v, v);
   return null;
 }
 
@@ -170,30 +121,17 @@ function getMonths(rows: any[]): MM[] {
 
 async function parseExcel(file: File) {
   const buf = await file.arrayBuffer();
-  // cellDates:false → dates come in as raw numbers or formatted strings,
-  // never as Date objects — completely sidesteps the timezone problem.
   const wb = XLSX.read(buf, { type:"array", cellDates:false, raw:false });
   const ws = wb.Sheets[wb.SheetNames[0]];
   const json: any[] = XLSX.utils.sheet_to_json(ws, { defval:"", raw:true });
 
-  console.log("[parseExcel] Total rows:", json.length);
-  if (json.length > 0) {
-    const firstRow = json[0];
-    console.log("[parseExcel] Column headers:", Object.keys(firstRow));
-    console.log("[parseExcel] First row sample:", firstRow);
-  }
-
   const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g," ").replace(/\s+/g," ").trim();
 
-  return json.map((row, idx) => {
+  return json.map((row) => {
     const r: any = {};
     Object.entries(row).forEach(([k,v]) => {
       const n = norm(k);
-      // Match only the standalone "date" column — not "start time", "end time", etc.
-      if (n === "date") {
-        r._d = v;
-        if (idx < 5) console.log(`[parseExcel] row#${idx} date col key="${k}" raw value:`, v, "type:", typeof v);
-      }
+      if (n === "date")                                  r._d    = v;
       if (n==="plant")                                   r._plant= Number(v)||0;
       if (n==="section")                                 r._sec  = String(v).toUpperCase().replace(/\s+/g," ").trim();
       if (n==="head reason"||n==="headreason")           r._hr   = String(v).toUpperCase().replace(/\s+/g," ").trim();
@@ -222,11 +160,8 @@ export default function IdleAnalysis() {
     const rows = await parseExcel(file);
     const ms   = getMonths(rows);
 
-    console.log("[load] Months detected:", ms);
-
     const map: DM = {};
-
-    rows.forEach((r, idx) => {
+    rows.forEach((r) => {
       const ymd = parseDateOnly(r._d); if (!ymd) return;
       const lbl = `${String(ymd.m).padStart(2,"0")}/${String(ymd.y).slice(-2)}`;
       const pk = SEC_MAP[r._sec]; if (!pk) return;
@@ -262,6 +197,92 @@ export default function IdleAnalysis() {
   const num:  React.CSSProperties = { ...base, textAlign:"right" };
   const hdr:  React.CSSProperties = { ...base, textAlign:"center", fontWeight:700 };
 
+  // ── Sections filtered to only active keys ────────────────────────────────
+  function getActiveSections(pks: string[]) {
+    return SECTIONS.map(s => ({
+      ...s,
+      activeKeys: s.keys.filter(k => pks.includes(k)),
+    })).filter(s => s.activeKeys.length > 0);
+  }
+
+  // ── TOTAL HRS consolidated table ─────────────────────────────────────────
+  function renderTotalHrsTable(pks: string[]) {
+    const activeSections = getActiveSections(pks);
+    const totalCols = pks.length; // number of machine columns
+
+    return (
+      <table style={{ borderCollapse:"collapse", marginBottom:16 }}>
+        <thead>
+          {/* Row 1: Month labels, each spanning all machine cols */}
+          <tr>
+            <th style={{...hdr, background:"#dce6f1", minWidth:65}} rowSpan={4}>Unit</th>
+            <th style={{...hdr, background:"#dce6f1", minWidth:48}} rowSpan={4}>Plant</th>
+            {months.map(mk => (
+              <th key={mk.label} style={{...hdr, background:"#dce6f1"}} colSpan={totalCols}>
+                {mk.label}
+              </th>
+            ))}
+          </tr>
+
+          {/* Row 2: Days count per month */}
+          <tr>
+            {months.map(mk => (
+              <th key={mk.label} style={{...hdr, background:"#bdd7ee", fontSize:10}} colSpan={totalCols}>
+                {mk.days} Days
+              </th>
+            ))}
+          </tr>
+
+          {/* Row 3: Section group headers repeated per month */}
+          <tr>
+            {months.map(mk =>
+              activeSections.map(s => (
+                <th key={`${mk.label}-${s.label}`} style={{...hdr, background:"#dce6f1"}} colSpan={s.activeKeys.length}>
+                  {s.label}
+                </th>
+              ))
+            )}
+          </tr>
+
+          {/* Row 4: Individual machine headers repeated per month */}
+          <tr>
+            {months.map(mk =>
+              activeSections.flatMap(s =>
+                s.activeKeys.map(k => (
+                  <th key={`${mk.label}-${k}`} style={{...hdr, background:"#bdd7ee", fontSize:10, minWidth:52}}>
+                    {PL[k]}
+                  </th>
+                ))
+              )
+            )}
+          </tr>
+        </thead>
+        <tbody>
+          {UNITS.map((u, i) => (
+            <tr key={u.name} style={{background:i%2===1?"#f2f2f2":"#fff"}}>
+              <td style={{...base, textAlign:"left", fontWeight:600}}>{u.name}</td>
+              <td style={{...num, textAlign:"center", color:"#555"}}>{u.plant}</td>
+              {months.map(mk =>
+                activeSections.flatMap(s =>
+                  s.activeKeys.map(k => {
+                    const mc = MC[u.name]?.[k] ?? 0;
+                    const total = mc * mk.days * 24;
+                    return (
+                      <td key={`${mk.label}-${k}`} style={{...num, color:total===0?"#bbb":"#000"}}>
+                        {total===0?"-":total.toLocaleString()}
+                      </td>
+                    );
+                  })
+                )
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    );
+  }
+
+  // ── Per-machine-row tables (for HR sections) ──────────────────────────────
   function renderTableShell(pk: string, bgColor: string, subColor: string, rows: React.ReactNode) {
     return (
       <table key={pk} style={{ borderCollapse:"collapse", marginBottom:8 }}>
@@ -284,6 +305,78 @@ export default function IdleAnalysis() {
     );
   }
 
+  // Consolidated HR table — same 4-row header layout as Total Hrs.
+  function renderConsolidatedHRTable(
+    hr: string,
+    pks: string[],
+    bgColor: string,
+    subColor: string
+  ) {
+    const activeSections = getActiveSections(pks);
+    const totalCols = pks.length;
+    const dataMap = dm[hr] ?? {};
+
+    return (
+      <table style={{ borderCollapse:"collapse", marginBottom:16 }}>
+        <thead>
+          {/* Row 1: Month labels */}
+          <tr>
+            <th style={{...hdr, background:bgColor, minWidth:65}} rowSpan={4}>Unit</th>
+            <th style={{...hdr, background:bgColor, minWidth:48}} rowSpan={4}>Plant</th>
+            {months.map(mk => (
+              <th key={mk.label} style={{...hdr, background:bgColor}} colSpan={totalCols}>{mk.label}</th>
+            ))}
+          </tr>
+          {/* Row 2: Days */}
+          <tr>
+            {months.map(mk => (
+              <th key={mk.label} style={{...hdr, background:subColor, fontSize:10}} colSpan={totalCols}>{mk.days} Days</th>
+            ))}
+          </tr>
+          {/* Row 3: Section groups */}
+          <tr>
+            {months.map(mk =>
+              activeSections.map(s => (
+                <th key={`${mk.label}-${s.label}`} style={{...hdr, background:bgColor}} colSpan={s.activeKeys.length}>{s.label}</th>
+              ))
+            )}
+          </tr>
+          {/* Row 4: Machine names */}
+          <tr>
+            {months.map(mk =>
+              activeSections.flatMap(s =>
+                s.activeKeys.map(k => (
+                  <th key={`${mk.label}-${k}`} style={{...hdr, background:subColor, fontSize:10, minWidth:52}}>{PL[k]}</th>
+                ))
+              )
+            )}
+          </tr>
+        </thead>
+        <tbody>
+          {UNITS.map((u, i) => (
+            <tr key={u.name} style={{background:i%2===1?"#f2f2f2":"#fff"}}>
+              <td style={{...base, textAlign:"left", fontWeight:600}}>{u.name}</td>
+              <td style={{...num, textAlign:"center", color:"#555"}}>{u.plant}</td>
+              {months.map(mk =>
+                activeSections.flatMap(s =>
+                  s.activeKeys.map(k => {
+                    const v = dataMap[u.plant]?.[k]?.[mk.label] ?? 0;
+                    return (
+                      <td key={`${mk.label}-${k}`} style={{...num, color:v===0?"#bbb":"#000"}}>
+                        {v===0?"-":v.toFixed(2)}
+                      </td>
+                    );
+                  })
+                )
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    );
+  }
+
+  // Legacy per-machine tables — kept for Remaining & Percentage sections
   function renderProcessTables(
     dataMap: Record<number, Record<string, Record<string, number>>>,
     pks: string[],
@@ -307,62 +400,136 @@ export default function IdleAnalysis() {
   }
 
   function renderRemainingTables(hr: string, pks: string[], bgColor: string, subColor: string) {
-    return pks.map(pk => {
-      const mc_row = (u: typeof UNITS[0], i: number) => {
-        const mc = MC[u.name]?.[pk] ?? 0;
-        return (
-          <tr key={u.name} style={{background:i%2===1?"#f2f2f2":"#fff"}}>
-            <td style={{...base, textAlign:"left", fontWeight:600, minWidth:55}}>{u.name}</td>
-            <td style={{...num, textAlign:"center", color:"#555", minWidth:45}}>{u.plant}</td>
-            {months.map(mk => {
-              const total     = mc * mk.days * 24;
-              const downForHR = dm[hr]?.[u.plant]?.[pk]?.[mk.label] ?? 0;
-              const remaining = total - downForHR;
-              const isNeg     = remaining < 0;
-              return (
-                <td key={mk.label} style={{...num,
-                  color: total===0?"#bbb":isNeg?"#c00":"#000",
-                  fontWeight: isNeg?700:"normal"
-                }}>
-                  {total===0?"-":remaining.toFixed(2)}
-                </td>
-              );
-            })}
+    const activeSections = getActiveSections(pks);
+    const totalCols = pks.length;
+    return (
+      <table style={{ borderCollapse:"collapse", marginBottom:16 }}>
+        <thead>
+          <tr>
+            <th style={{...hdr, background:bgColor, minWidth:65}} rowSpan={4}>Unit</th>
+            <th style={{...hdr, background:bgColor, minWidth:48}} rowSpan={4}>Plant</th>
+            {months.map(mk => (
+              <th key={mk.label} style={{...hdr, background:bgColor}} colSpan={totalCols}>{mk.label}</th>
+            ))}
           </tr>
-        );
-      };
-      return renderTableShell(pk, bgColor, subColor, UNITS.map(mc_row));
-    });
+          <tr>
+            {months.map(mk => (
+              <th key={mk.label} style={{...hdr, background:subColor, fontSize:10}} colSpan={totalCols}>{mk.days} Days</th>
+            ))}
+          </tr>
+          <tr>
+            {months.map(mk =>
+              activeSections.map(s => (
+                <th key={`${mk.label}-${s.label}`} style={{...hdr, background:bgColor}} colSpan={s.activeKeys.length}>{s.label}</th>
+              ))
+            )}
+          </tr>
+          <tr>
+            {months.map(mk =>
+              activeSections.flatMap(s =>
+                s.activeKeys.map(k => (
+                  <th key={`${mk.label}-${k}`} style={{...hdr, background:subColor, fontSize:10, minWidth:52}}>{PL[k]}</th>
+                ))
+              )
+            )}
+          </tr>
+        </thead>
+        <tbody>
+          {UNITS.map((u, i) => (
+            <tr key={u.name} style={{background:i%2===1?"#f2f2f2":"#fff"}}>
+              <td style={{...base, textAlign:"left", fontWeight:600}}>{u.name}</td>
+              <td style={{...num, textAlign:"center", color:"#555"}}>{u.plant}</td>
+              {months.map(mk =>
+                activeSections.flatMap(s =>
+                  s.activeKeys.map(k => {
+                    const mc        = MC[u.name]?.[k] ?? 0;
+                    const total     = mc * mk.days * 24;
+                    const downForHR = dm[hr]?.[u.plant]?.[k]?.[mk.label] ?? 0;
+                    const remaining = total - downForHR;
+                    const isNeg     = remaining < 0;
+                    return (
+                      <td key={`${mk.label}-${k}`} style={{...num,
+                        color: total===0?"#bbb":isNeg?"#c00":"#000",
+                        fontWeight: isNeg?700:"normal"
+                      }}>
+                        {total===0?"-":remaining.toFixed(2)}
+                      </td>
+                    );
+                  })
+                )
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    );
   }
 
   function renderPercentageTables(hr: string, pks: string[], bgColor: string, subColor: string) {
-    return pks.map(pk => {
-      const pct_row = (u: typeof UNITS[0], i: number) => {
-        const mc = MC[u.name]?.[pk] ?? 0;
-        return (
-          <tr key={u.name} style={{background:i%2===1?"#f2f2f2":"#fff"}}>
-            <td style={{...base, textAlign:"left", fontWeight:600, minWidth:55}}>{u.name}</td>
-            <td style={{...num, textAlign:"center", color:"#555", minWidth:45}}>{u.plant}</td>
-            {months.map(mk => {
-              const total     = mc * mk.days * 24;
-              const downForHR = dm[hr]?.[u.plant]?.[pk]?.[mk.label] ?? 0;
-              const pct       = total === 0 ? null : (downForHR / total) * 100;
-              const isHigh    = pct !== null && pct > 100;
-              const isEmpty   = pct === null || pct === 0;
-              return (
-                <td key={mk.label} style={{...num,
-                  color: isEmpty?"#bbb":isHigh?"#c00":"#000",
-                  fontWeight: isHigh?700:"normal"
-                }}>
-                  {isEmpty ? "-" : `${pct!.toFixed(2)}%`}
-                </td>
-              );
-            })}
+    const activeSections = getActiveSections(pks);
+    const totalCols = pks.length;
+    return (
+      <table style={{ borderCollapse:"collapse", marginBottom:16 }}>
+        <thead>
+          <tr>
+            <th style={{...hdr, background:bgColor, minWidth:65}} rowSpan={4}>Unit</th>
+            <th style={{...hdr, background:bgColor, minWidth:48}} rowSpan={4}>Plant</th>
+            {months.map(mk => (
+              <th key={mk.label} style={{...hdr, background:bgColor}} colSpan={totalCols}>{mk.label}</th>
+            ))}
           </tr>
-        );
-      };
-      return renderTableShell(pk, bgColor, subColor, UNITS.map(pct_row));
-    });
+          <tr>
+            {months.map(mk => (
+              <th key={mk.label} style={{...hdr, background:subColor, fontSize:10}} colSpan={totalCols}>{mk.days} Days</th>
+            ))}
+          </tr>
+          <tr>
+            {months.map(mk =>
+              activeSections.map(s => (
+                <th key={`${mk.label}-${s.label}`} style={{...hdr, background:bgColor}} colSpan={s.activeKeys.length}>{s.label}</th>
+              ))
+            )}
+          </tr>
+          <tr>
+            {months.map(mk =>
+              activeSections.flatMap(s =>
+                s.activeKeys.map(k => (
+                  <th key={`${mk.label}-${k}`} style={{...hdr, background:subColor, fontSize:10, minWidth:52}}>{PL[k]}</th>
+                ))
+              )
+            )}
+          </tr>
+        </thead>
+        <tbody>
+          {UNITS.map((u, i) => (
+            <tr key={u.name} style={{background:i%2===1?"#f2f2f2":"#fff"}}>
+              <td style={{...base, textAlign:"left", fontWeight:600}}>{u.name}</td>
+              <td style={{...num, textAlign:"center", color:"#555"}}>{u.plant}</td>
+              {months.map(mk =>
+                activeSections.flatMap(s =>
+                  s.activeKeys.map(k => {
+                    const mc        = MC[u.name]?.[k] ?? 0;
+                    const total     = mc * mk.days * 24;
+                    const downForHR = dm[hr]?.[u.plant]?.[k]?.[mk.label] ?? 0;
+                    const pct       = total === 0 ? null : (downForHR / total) * 100;
+                    const isHigh    = pct !== null && pct > 100;
+                    const isEmpty   = pct === null || pct === 0;
+                    return (
+                      <td key={`${mk.label}-${k}`} style={{...num,
+                        color: isEmpty?"#bbb":isHigh?"#c00":"#000",
+                        fontWeight: isHigh?700:"normal"
+                      }}>
+                        {isEmpty ? "-" : `${pct!.toFixed(2)}%`}
+                      </td>
+                    );
+                  })
+                )
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    );
   }
 
   function SectionTitle({ label, borderColor }: { label: string; borderColor: string }) {
@@ -434,29 +601,9 @@ export default function IdleAnalysis() {
             </tbody>
           </table>
 
-          {/* ══ TOTAL HRS ══ */}
+          {/* ══ TOTAL HRS — consolidated multi-header table ══ */}
           <SectionTitle label="Total Hrs." borderColor="#4472c4" />
-          {activePks.map(pk =>
-            renderTableShell(pk, "#dce6f1", "#e8e8e8",
-              UNITS.map((u,i) => {
-                const mc = MC[u.name]?.[pk] ?? 0;
-                return (
-                  <tr key={u.name} style={{background:i%2===1?"#f2f2f2":"#fff"}}>
-                    <td style={{...base, textAlign:"left", fontWeight:600, minWidth:55}}>{u.name}</td>
-                    <td style={{...num, textAlign:"center", color:"#555", minWidth:45}}>{u.plant}</td>
-                    {months.map(mk => {
-                      const total = mc * mk.days * 24;
-                      return (
-                        <td key={mk.label} style={{...num, color:total===0?"#bbb":"#000"}}>
-                          {total===0?"-":total.toLocaleString()}
-                        </td>
-                      );
-                    })}
-                  </tr>
-                );
-              })
-            )
-          )}
+          {renderTotalHrsTable(activePks)}
 
           {/* ══ ONE BLOCK PER HEAD REASON ══ */}
           {activeHRs.map(hr => {
@@ -469,7 +616,7 @@ export default function IdleAnalysis() {
             return (
               <div key={hr}>
                 <SectionTitle label={c.label} borderColor={c.sub} />
-                {renderProcessTables(dm[hr] ?? {}, activePks, c.bg, c.sub)}
+                {renderConsolidatedHRTable(hr, activePks, c.bg, c.sub)}
 
                 <SectionTitle label={c.remLabel} borderColor={c.remSub} />
                 {renderRemainingTables(hr, activePks, c.remBg, c.remSub)}
