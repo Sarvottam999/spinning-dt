@@ -269,7 +269,7 @@ export default function IdleAnalysis() {
                     const total = mc * mk.days * 24;
                     return (
                       <td key={`${mk.label}-${k}`} style={{...num, color:total===0?"#bbb":"#000"}}>
-                        {total===0?"-":total.toLocaleString()}
+                        {total===0?"-":total}
                       </td>
                     );
                   })
