@@ -1,5 +1,5 @@
 "use client";
-import { useState, useCallback, useRef } from "react";
+import React, { useState, useCallback, useRef } from "react";
 import * as XLSX from "xlsx";
 
 // ─── Static Data ──────────────────────────────────────────────────────────────
@@ -134,8 +134,9 @@ async function parseExcel(file: File) {
       if (n === "date")                                  r._d    = v;
       if (n==="plant")                                   r._plant= Number(v)||0;
       if (n==="section")                                 r._sec  = String(v).toUpperCase().replace(/\s+/g," ").trim();
-      if (n==="head reason"||n==="headreason")           r._hr   = String(v).toUpperCase().replace(/\s+/g," ").trim();
-      if (n.includes("total down")||n==="totaldowntime") r._down = Number(v)||0;
+      if (n==="head reason"||n==="headreason")                         r._hr  = String(v).toUpperCase().replace(/\s+/g," ").trim();
+      if (n==="sub head reason"||n==="subheadreason"||n==="sub reason") r._shr = String(v).trim();
+      if (n.includes("total down")||n==="totaldowntime")               r._down= Number(v)||0;
     });
     return r;
   }).filter(r => r._plant && r._sec);
@@ -145,9 +146,13 @@ async function parseExcel(file: File) {
 
 type DM = Record<string, Record<number, Record<string, Record<string, number>>>>;
 
+// SHR map: hr → shr → plant → month → downtime
+type SHRM = Record<string, Record<string, Record<number, Record<string, number>>>>;
+
 export default function IdleAnalysis() {
   const [months,    setMonths]    = useState<MM[]>([]);
   const [dm,        setDm]        = useState<DM>({});
+  const [shrMap,    setShrMap]    = useState<SHRM>({});
   const [activePks, setActivePks] = useState<string[]>([]);
   const [activeHRs, setActiveHRs] = useState<string[]>([]);
   const [fileName,  setFN]        = useState("");
@@ -161,6 +166,8 @@ export default function IdleAnalysis() {
     const ms   = getMonths(rows);
 
     const map: DM = {};
+    const smap: SHRM = {};
+
     rows.forEach((r) => {
       const ymd = parseDateOnly(r._d); if (!ymd) return;
       const lbl = `${String(ymd.m).padStart(2,"0")}/${String(ymd.y).slice(-2)}`;
@@ -171,6 +178,13 @@ export default function IdleAnalysis() {
       if (!map[hr][p])      map[hr][p]      = {};
       if (!map[hr][p][pk])  map[hr][p][pk]  = {};
       map[hr][p][pk][lbl] = (map[hr][p][pk][lbl]||0) + r._down;
+
+      // SHR aggregation: hr → shr → plant → month
+      const shr = r._shr || "Unknown";
+      if (!smap[hr])           smap[hr]           = {};
+      if (!smap[hr][shr])      smap[hr][shr]      = {};
+      if (!smap[hr][shr][p])   smap[hr][shr][p]   = {};
+      smap[hr][shr][p][lbl] = (smap[hr][shr][p][lbl]||0) + r._down;
     });
 
     const seenPks = new Set(rows.map((r:any) => SEC_MAP[r._sec]).filter(Boolean));
@@ -184,12 +198,13 @@ export default function IdleAnalysis() {
 
     setMonths(ms);
     setDm(map);
+    setShrMap(smap);
     setActivePks(orderedPks);
     setActiveHRs(orderedHRs);
     setLoaded(true);
   }, []);
 
-  const reset = () => { setLoaded(false); setMonths([]); setDm({}); setActivePks([]); setActiveHRs([]); setFN(""); };
+  const reset = () => { setLoaded(false); setMonths([]); setDm({}); setShrMap({}); setActivePks([]); setActiveHRs([]); setFN(""); };
   const onDrop = (e: React.DragEvent) => { e.preventDefault(); setDrag(false); const f=e.dataTransfer.files[0]; if(f) load(f); };
 
   const border = "1px solid #b0b0b0";
@@ -534,6 +549,158 @@ export default function IdleAnalysis() {
     );
   }
 
+  // ── Sub Head Reason summary table ────────────────────────────────────────
+  // Columns: Head / Sub Head Reason | Norms | per-unit: FY25 | FY26 | month... | UTD Avg
+  // We derive FY from month label: mm/yy where Apr(04) starts a new FY
+  // FY label: if mm >= 4 → FY = yy+1, else FY = yy (e.g. 04/26 → FY27, 01/26 → FY26)
+  function getFY(mk: MM): string {
+    return mk.m >= 4 ? `FY${(mk.y+1).toString().slice(-2)}` : `FY${mk.y.toString().slice(-2)}`;
+  }
+
+  function renderSHRTable() {
+    if (!months.length) return null;
+
+    // Build ordered FY list and month-within-FY structure
+    const fySet: string[] = [];
+    const fyMonths: Record<string, MM[]> = {};
+    months.forEach(mk => {
+      const fy = getFY(mk);
+      if (!fyMonths[fy]) { fyMonths[fy] = []; fySet.push(fy); }
+      fyMonths[fy].push(mk);
+    });
+
+    // All FYs except last are "full year" (single aggregated col); last FY is month-wise + UTD Avg
+    const fullFYs   = fySet.slice(0, -1);
+    const currentFY = fySet[fySet.length - 1];
+    const curMonths = fyMonths[currentFY];
+
+    // Total cols per unit = fullFYs.length + curMonths.length + 1 (UTD Avg)
+    const colsPerUnit = fullFYs.length + curMonths.length + 1;
+
+    // Gather all HR→SHR rows in order
+    const hrOrder = activeHRs;
+
+    // HR row colors
+    const HR_ROW_COLORS: Record<string,{bg:string,text:string}> = {
+      IDLE:      { bg:"#f4b183", text:"#7b3200" },
+      PLANNED:   { bg:"#a9d18e", text:"#1e4d1e" },
+      UNPLANNED: { bg:"#ffd966", text:"#7b5800" },
+      OTHERS:    { bg:"#bfbfbf", text:"#333"    },
+    };
+
+    const cellStyle: React.CSSProperties = { ...base, textAlign:"right", minWidth:48 };
+    const labelStyle: React.CSSProperties = { ...base, textAlign:"left", minWidth:160, paddingLeft:6 };
+    const hrLabelStyle: React.CSSProperties = { ...base, textAlign:"left", fontWeight:700, minWidth:160, paddingLeft:4 };
+    const normsStyle: React.CSSProperties = { ...base, textAlign:"center", minWidth:40 };
+
+    // Helper: sum downtime for a HR (all SHRs) or a specific SHR across units for a set of months
+    function sumForMonths(hr: string, shr: string | null, plant: number, mks: MM[]): number {
+      if (shr === null) {
+        // sum all SHRs
+        return Object.values(shrMap[hr] ?? {}).reduce((tot, plantMap) => {
+          return tot + mks.reduce((s, mk) => s + (plantMap[plant]?.[mk.label] ?? 0), 0);
+        }, 0);
+      }
+      return mks.reduce((s, mk) => s + (shrMap[hr]?.[shr]?.[plant]?.[mk.label] ?? 0), 0);
+    }
+
+    function fmtV(v: number) { return v === 0 ? "-" : v.toFixed(2); }
+
+    return (
+      <table style={{ borderCollapse:"collapse", marginBottom:16 }}>
+        <thead>
+          {/* Row 1: Unit names, each spanning colsPerUnit */}
+          <tr>
+            <th style={{...hdr, background:"#dce6f1", minWidth:160}} rowSpan={3}>Head / Sub Head Reason</th>
+            <th style={{...hdr, background:"#dce6f1", minWidth:40}}  rowSpan={3}>Norms</th>
+            {UNITS.map(u => (
+              <th key={u.name} style={{...hdr, background:"#dce6f1"}} colSpan={colsPerUnit}>{u.name}</th>
+            ))}
+          </tr>
+          {/* Row 2: FY labels — full FYs as single col, current FY spans months+UTD */}
+          <tr>
+            {UNITS.map(u => (
+              <React.Fragment key={u.name}>
+                {fullFYs.map(fy => (
+                  <th key={fy} style={{...hdr, background:"#bdd7ee", minWidth:48}}>{fy}</th>
+                ))}
+                <th style={{...hdr, background:"#dce6f1"}} colSpan={curMonths.length + 1}>{currentFY}</th>
+              </React.Fragment>
+            ))}
+          </tr>
+          {/* Row 3: month labels for current FY + UTD Avg */}
+          <tr>
+            {UNITS.map(u => (
+              <React.Fragment key={u.name}>
+                {fullFYs.map(fy => (
+                  <th key={fy} style={{...hdr, background:"#bdd7ee", fontSize:10}}>{fy}</th>
+                ))}
+                {curMonths.map(mk => (
+                  <th key={mk.label} style={{...hdr, background:"#bdd7ee", fontSize:10, minWidth:48}}>{mk.label}</th>
+                ))}
+                <th style={{...hdr, background:"#dae3f3", fontSize:10, minWidth:52}}>UTD Avg</th>
+              </React.Fragment>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {hrOrder.map(hr => {
+            const shrs = Object.keys(shrMap[hr] ?? {}).sort();
+            const hrColor = HR_ROW_COLORS[hr] ?? { bg:"#bfbfbf", text:"#333" };
+            const hrLabel = hr.charAt(0) + hr.slice(1).toLowerCase();
+            return (
+              <>
+                {/* Sub Head Reason rows */}
+                {shrs.map((shr, si) => (
+                  <tr key={`${hr}-${shr}`} style={{background: si%2===0?"#fff":"#f5f5f5"}}>
+                    <td style={{...labelStyle, paddingLeft:14, color:"#333"}}>{shr}</td>
+                    <td style={normsStyle}>-</td>
+                    {UNITS.map(u => (
+                      <React.Fragment key={u.name}>
+                        {fullFYs.map(fy => {
+                          const v = sumForMonths(hr, shr, u.plant, fyMonths[fy]);
+                          return <td key={fy} style={cellStyle}>{fmtV(v)}</td>;
+                        })}
+                        {curMonths.map(mk => {
+                          const v = shrMap[hr]?.[shr]?.[u.plant]?.[mk.label] ?? 0;
+                          return <td key={mk.label} style={cellStyle}>{fmtV(v)}</td>;
+                        })}
+                        {/* UTD Avg = total for current FY / number of months so far */}
+                        <td style={{...cellStyle, background:"#eef3fb"}}>
+                          {fmtV(sumForMonths(hr, shr, u.plant, curMonths) / (curMonths.length || 1))}
+                        </td>
+                      </React.Fragment>
+                    ))}
+                  </tr>
+                ))}
+                {/* Head Reason summary row */}
+                <tr style={{background: hrColor.bg}}>
+                  <td style={{...hrLabelStyle, color: hrColor.text}}>{hrLabel}</td>
+                  <td style={{...normsStyle, color: hrColor.text}}>-</td>
+                  {UNITS.map(u => (
+                    <React.Fragment key={u.name}>
+                      {fullFYs.map(fy => {
+                        const v = sumForMonths(hr, null, u.plant, fyMonths[fy]);
+                        return <td key={fy} style={{...cellStyle, fontWeight:700, color: hrColor.text}}>{fmtV(v)}</td>;
+                      })}
+                      {curMonths.map(mk => {
+                        const v = Object.values(shrMap[hr] ?? {}).reduce((s, pm) => s + (pm[u.plant]?.[mk.label] ?? 0), 0);
+                        return <td key={mk.label} style={{...cellStyle, fontWeight:700, color: hrColor.text}}>{fmtV(v)}</td>;
+                      })}
+                      <td style={{...cellStyle, fontWeight:700, background: hrColor.bg, color: hrColor.text}}>
+                        {fmtV(sumForMonths(hr, null, u.plant, curMonths) / (curMonths.length || 1))}
+                      </td>
+                    </React.Fragment>
+                  ))}
+                </tr>
+              </>
+            );
+          })}
+        </tbody>
+      </table>
+    );
+  }
+
   function SectionTitle({ label, borderColor }: { label: string; borderColor: string }) {
     return (
       <div style={{ fontWeight:700, fontSize:12, margin:"14px 0 4px", color:"#1f3864",
@@ -628,6 +795,10 @@ export default function IdleAnalysis() {
               </div>
             );
           })}
+
+          {/* ══ SUB HEAD REASON SUMMARY TABLE ══ */}
+          <SectionTitle label="Sub Head Reason Summary" borderColor="#4472c4" />
+          {renderSHRTable()}
 
         </div>
       )}
