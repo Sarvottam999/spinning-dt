@@ -1,48 +1,67 @@
 "use client";
-import React, { useState, useCallback, useRef, useMemo } from "react";
+import { useState, useCallback, useRef, useMemo, useEffect, Fragment } from "react";
 import * as XLSX from "xlsx";
 
-// ─── Static Data ──────────────────────────────────────────────────────────────
+// ─── Types ─────────────────────────────────────────────────────────────────────
 
-const UNITS = [
-  { name: "NGD",    plant: 1101 },
-  { name: "BCK",    plant: 1201 },
-  { name: "HRR",    plant: 1301 },
-  { name: "VIL-1",  plant: 1601 },
-  { name: "VIL-2",  plant: 1602 },
-  { name: "IBR",    plant: 2111 },
-  { name: "TRC",    plant: 4101 },
+interface Unit { name: string; plant: number; }
+interface SectionDef { label: string; keys: string[]; }
+interface ActiveSection extends SectionDef { activeKeys: string[]; }
+interface YMD { y: number; m: number; d: number; }
+interface MonthMeta { y: number; m: number; label: string; days: number; }
+
+interface ParsedRow {
+  _d: unknown; _plant: number; _floc: string;
+  _sec: string; _hr: string; _shr: string; _down: number;
+}
+
+// map[plant][pk][monthLabel] = totalDown
+type HrMap = Record<number, Record<string, Record<string, number>>>;
+
+// shrMap[hr][shr][plant][pk][monthLabel] = totalDown
+type ShrMap = Record<string, Record<string, Record<number, Record<string, Record<string, number>>>>>;
+
+// ─── Static Data ───────────────────────────────────────────────────────────────
+
+const UNITS: Unit[] = [
+  { name: "NGD",   plant: 1101 },
+  { name: "BCK",   plant: 1201 },
+  { name: "HRR",   plant: 1301 },
+  { name: "VIL-1", plant: 1601 },
+  { name: "VIL-2", plant: 1602 },
+  { name: "IBR",   plant: 2111 },
+  { name: "TRC",   plant: 4101 },
 ];
 
 const MC: Record<string, Record<string, number>> = {
-  NGD:    { spinning:11,dryer:11,bailingPress:13,simplex:22,churn:0, twinRollPress:15,firstStageGCF:42,secondStageGCF:31,thirdStageGCF:32,rejectGCF:4, msfe:17,aac:5,anhydrousEvaporator:6,acidPlant:4,cs2Furnace:16,cs2Plant:0,wsa:0 },
-  BCK:    { spinning:4, dryer:4, bailingPress:5, simplex:12,churn:0, twinRollPress:14,firstStageGCF:38,secondStageGCF:26,thirdStageGCF:27,rejectGCF:8, msfe:9, aac:4,anhydrousEvaporator:5,acidPlant:2,cs2Furnace:13,cs2Plant:0,wsa:0 },
-  HRR:    { spinning:3, dryer:3, bailingPress:4, simplex:9, churn:2, twinRollPress:9, firstStageGCF:20,secondStageGCF:16,thirdStageGCF:16,rejectGCF:6, msfe:8, aac:3,anhydrousEvaporator:4,acidPlant:1,cs2Furnace:9, cs2Plant:0,wsa:0 },
-  "VIL-1":{ spinning:4, dryer:4, bailingPress:5, simplex:0, churn:8, twinRollPress:17,firstStageGCF:41,secondStageGCF:34,thirdStageGCF:34,rejectGCF:11,msfe:10,aac:7,anhydrousEvaporator:6,acidPlant:1,cs2Furnace:0, cs2Plant:1,wsa:0 },
-  "VIL-2":{ spinning:2, dryer:2, bailingPress:5, simplex:0, churn:10,twinRollPress:16,firstStageGCF:28,secondStageGCF:24,thirdStageGCF:24,rejectGCF:8, msfe:10,aac:4,anhydrousEvaporator:5,acidPlant:1,cs2Furnace:0, cs2Plant:1,wsa:1 },
-  IBR:    { spinning:5, dryer:5, bailingPress:7, simplex:18,churn:4, twinRollPress:20,firstStageGCF:43,secondStageGCF:30,thirdStageGCF:31,rejectGCF:8, msfe:13,aac:8,anhydrousEvaporator:6,acidPlant:3,cs2Furnace:0, cs2Plant:1,wsa:2 },
-  TRC:    { spinning:4, dryer:4, bailingPress:7, simplex:19,churn:3, twinRollPress:16,firstStageGCF:39,secondStageGCF:25,thirdStageGCF:29,rejectGCF:10,msfe:10,aac:7,anhydrousEvaporator:6,acidPlant:3,cs2Furnace:0, cs2Plant:1,wsa:0 },
+  NGD:    { spinning:11,dryer:11,bailingPress:13,simplex:22,churn:0, twinRollPress:15,firstStageGCF:42,secondStageGCF:31,thirdStageGCF:32,rejectGCF:4, msfe:17,aac:5, anhydrousEvaporator:6,acidPlant:4,cs2Furnace:16,cs2Plant:0,wsa:0 },
+  BCK:    { spinning:4, dryer:4, bailingPress:5, simplex:12,churn:0, twinRollPress:14,firstStageGCF:38,secondStageGCF:26,thirdStageGCF:27,rejectGCF:8, msfe:9, aac:4, anhydrousEvaporator:5,acidPlant:2,cs2Furnace:13,cs2Plant:0,wsa:0 },
+  HRR:    { spinning:3, dryer:3, bailingPress:4, simplex:9, churn:2, twinRollPress:9, firstStageGCF:20,secondStageGCF:16,thirdStageGCF:16,rejectGCF:6, msfe:8, aac:3, anhydrousEvaporator:4,acidPlant:1,cs2Furnace:9, cs2Plant:0,wsa:0 },
+  "VIL-1":{ spinning:4, dryer:4, bailingPress:5, simplex:0, churn:8, twinRollPress:17,firstStageGCF:41,secondStageGCF:34,thirdStageGCF:34,rejectGCF:11,msfe:10,aac:7, anhydrousEvaporator:6,acidPlant:1,cs2Furnace:0, cs2Plant:1,wsa:0 },
+  "VIL-2":{ spinning:2, dryer:2, bailingPress:5, simplex:0, churn:10,twinRollPress:16,firstStageGCF:28,secondStageGCF:24,thirdStageGCF:24,rejectGCF:8, msfe:10,aac:4, anhydrousEvaporator:5,acidPlant:1,cs2Furnace:0, cs2Plant:1,wsa:1 },
+  IBR:    { spinning:5, dryer:5, bailingPress:7, simplex:18,churn:4, twinRollPress:20,firstStageGCF:43,secondStageGCF:30,thirdStageGCF:31,rejectGCF:8, msfe:13,aac:8, anhydrousEvaporator:6,acidPlant:3,cs2Furnace:0, cs2Plant:1,wsa:2 },
+  TRC:    { spinning:4, dryer:4, bailingPress:7, simplex:19,churn:3, twinRollPress:16,firstStageGCF:39,secondStageGCF:25,thirdStageGCF:29,rejectGCF:10,msfe:10,aac:7, anhydrousEvaporator:6,acidPlant:3,cs2Furnace:0, cs2Plant:1,wsa:0 },
 };
 
-const SECTIONS = [
-  { label:"Spinning",  keys:["spinning","dryer","bailingPress"] },
-  { label:"Viscose",   keys:["simplex","churn","twinRollPress","firstStageGCF","secondStageGCF","thirdStageGCF","rejectGCF","msfe"] },
-  { label:"Auxiliary", keys:["aac","anhydrousEvaporator","acidPlant"] },
-  { label:"Ancillary", keys:["cs2Furnace","cs2Plant","wsa"] },
+const SECTIONS: SectionDef[] = [
+  { label: "Spinning",  keys: ["spinning","dryer","bailingPress"] },
+  { label: "Viscose",   keys: ["simplex","churn","twinRollPress","firstStageGCF","secondStageGCF","thirdStageGCF","rejectGCF","msfe"] },
+  { label: "Auxiliary", keys: ["aac","anhydrousEvaporator","acidPlant"] },
+  { label: "Ancillary", keys: ["cs2Furnace","cs2Plant","wsa"] },
 ];
 
-const PL: Record<string,string> = {
-  spinning:"Spinning",dryer:"Dryer",bailingPress:"Bailing Press",
-  simplex:"Simplex",churn:"Churn",twinRollPress:"Twin Roll Press",
-  firstStageGCF:"1st Stage GCF",secondStageGCF:"2nd Stage GCF",thirdStageGCF:"3rd Stage GCF",
-  rejectGCF:"Reject GCF",msfe:"MSFE",
-  aac:"AAC",anhydrousEvaporator:"Anhydrous Evaporator",acidPlant:"Acid Plant",
-  cs2Furnace:"CS2 Furnace",cs2Plant:"CS2 Plant",wsa:"WSA",
+const PL: Record<string, string> = {
+  spinning:"Spinning", dryer:"Dryer", bailingPress:"Bailing Press",
+  simplex:"Simplex", churn:"Churn", twinRollPress:"Twin Roll Press",
+  firstStageGCF:"1st Stage GCF", secondStageGCF:"2nd Stage GCF", thirdStageGCF:"3rd Stage GCF",
+  rejectGCF:"Reject GCF", msfe:"MSFE",
+  aac:"AAC", anhydrousEvaporator:"Anhydrous Evaporator", acidPlant:"Acid Plant",
+  cs2Furnace:"CS2 Furnace", cs2Plant:"CS2 Plant", wsa:"WSA",
 };
 
-const ALL_KEYS = SECTIONS.flatMap(s => s.keys);
+const ALL_KEYS: string[] = SECTIONS.flatMap(s => s.keys);
 
-const SEC_MAP: Record<string,string> = {
+const SEC_MAP: Record<string, string> = {
   "SPINNING MACHINE":"spinning","SPINNING":"spinning","SPIN":"spinning",
   "DRYER":"dryer","DRIER":"dryer",
   "BAILING PRESS":"bailingPress","BALING PRESS":"bailingPress","BAILING":"bailingPress","BALING":"bailingPress",
@@ -62,30 +81,43 @@ const SEC_MAP: Record<string,string> = {
   "WSA":"wsa",
 };
 
-const HEAD_REASON_ORDER = ["IDLE","PLANNED","UNPLANNED","OTHERS"];
-
-const HR_COLORS: Record<string,{bg:string,sub:string,label:string,remBg:string,remSub:string,remLabel:string,pctBg:string,pctSub:string,pctLabel:string}> = {
-  IDLE:      { bg:"#fce4d6", sub:"#f4b183", label:"Idle Hrs.",      remBg:"#fdf3ee", remSub:"#f9cdb0", remLabel:"Remaining Hrs. (after Idle)",      pctBg:"#fce9df", pctSub:"#f7c4a0", pctLabel:"% Idle Hrs. / Total Hrs."      },
-  PLANNED:   { bg:"#e2efda", sub:"#a9d18e", label:"Planned Hrs.",   remBg:"#f0f7eb", remSub:"#c6e3b1", remLabel:"Remaining Hrs. (after Planned)",   pctBg:"#e8f3e1", pctSub:"#bcdba4", pctLabel:"% Planned Hrs. / Total Hrs."   },
-  UNPLANNED: { bg:"#fff2cc", sub:"#ffd966", label:"Unplanned Hrs.", remBg:"#fffae5", remSub:"#ffe99a", remLabel:"Remaining Hrs. (after Unplanned)", pctBg:"#fff6d6", pctSub:"#ffdf80", pctLabel:"% Unplanned Hrs. / Total Hrs." },
-  OTHERS:    { bg:"#ededed", sub:"#bfbfbf", label:"Others Hrs.",    remBg:"#f5f5f5", remSub:"#d6d6d6", remLabel:"Remaining Hrs. (after Others)",    pctBg:"#f0f0f0", pctSub:"#cccccc", pctLabel:"% Others Hrs. / Total Hrs."    },
+const HR_CONFIG: Record<string, { label: string; bg: string; sub: string; pctBg: string; pctSub: string; }> = {
+  PLANNED:   { label:"Planned",   bg:"#e2efda", sub:"#a9d18e", pctBg:"#f0f7eb", pctSub:"#c6e3b1" },
+  UNPLANNED: { label:"Unplanned", bg:"#fff2cc", sub:"#ffd966", pctBg:"#fffae5", pctSub:"#ffe99a" },
+  OTHERS:    { label:"Others",    bg:"#ededed", sub:"#bfbfbf", pctBg:"#f5f5f5", pctSub:"#d6d6d6" },
 };
+const HR_ORDER = ["PLANNED", "UNPLANNED", "OTHERS"] as const;
 
-// ─── Date Helpers ─────────────────────────────────────────────────────────────
+// Consolidated table colour scheme per HR bucket
+const CONSOL_HR_STYLE: Record<string, { rowBg: string; rowText: string; }> = {
+  // ── NEW: IDLE row style (salmon/orange) ──
+  IDLE:      { rowBg: "#fce4d6", rowText: "#7b2800" },
+  PLANNED:   { rowBg: "#c6efce", rowText: "#1a4d1a" },
+  UNPLANNED: { rowBg: "#ffeb9c", rowText: "#7b5800" },
+  OTHERS:    { rowBg: "#bfbfbf", rowText: "#222" },
+};
+const CONSOL_COMBINED_STYLE = { rowBg: "#dce6f1", rowText: "#1e3a5f" };
+const CONSOL_TOTAL_STYLE    = { rowBg: "#1e3a5f", rowText: "#fff" };
 
-function dim(y: number, m: number) { return new Date(y, m, 0).getDate(); }
+// ─── FY helpers ────────────────────────────────────────────────────────────────
 
-interface YMD { y: number; m: number; d: number }
+function getFYLabel(mk: MonthMeta): string {
+  const endYear = mk.m >= 4 ? mk.y + 1 : mk.y;
+  return `FY${String(endYear).slice(-2)}`;
+}
 
-function parseDateOnly(v: any): YMD | null {
+// ─── Helpers ───────────────────────────────────────────────────────────────────
+function trunc3(v: number): string {
+    return (Math.trunc(v * 1000) / 1000).toString();
+  }
+function daysInMonth(y: number, m: number): number { return new Date(y, m, 0).getDate(); }
+
+function parseDateOnly(v: unknown): YMD | null {
   if (v === null || v === undefined || v === "") return null;
   if (typeof v === "number") {
-    const serial = Math.floor(v);
-    const ms = (serial - 25569) * 86400000;
-    const y = new Date(ms).getUTCFullYear();
-    const m = new Date(ms).getUTCMonth() + 1;
-    const d = new Date(ms).getUTCDate();
-    return { y, m, d };
+    const ms = (Math.floor(v) - 25569) * 86400000;
+    const dt = new Date(ms);
+    return { y: dt.getUTCFullYear(), m: dt.getUTCMonth() + 1, d: dt.getUTCDate() };
   }
   if (typeof v === "string") {
     const s = v.trim();
@@ -99,64 +131,66 @@ function parseDateOnly(v: any): YMD | null {
   return null;
 }
 
-interface MM { y:number; m:number; label:string; days:number }
-
-function getMonths(rows: any[]): MM[] {
-  const seen = new Map<string,MM>();
+function getMonths(rows: ParsedRow[]): MonthMeta[] {
+  const seen = new Map<string, MonthMeta>();
   rows.forEach(r => {
-    const ymd = parseDateOnly(r._d); if (!ymd) return;
-    const label = `${String(ymd.m).padStart(2,"0")}/${String(ymd.y).slice(-2)}`;
-    if (!seen.has(label)) seen.set(label, { y: ymd.y, m: ymd.m, label, days: dim(ymd.y, ymd.m) });
+    const ymd = parseDateOnly(r._d);
+    if (!ymd) return;
+    const label = `${String(ymd.m).padStart(2, "0")}/${String(ymd.y).slice(-2)}`;
+    if (!seen.has(label))
+      seen.set(label, { y: ymd.y, m: ymd.m, label, days: daysInMonth(ymd.y, ymd.m) });
   });
-  return [...seen.values()].sort((a,b) => a.y!==b.y ? a.y-b.y : a.m-b.m);
+  return [...seen.values()].sort((a, b) => a.y !== b.y ? a.y - b.y : a.m - b.m);
 }
 
-// ─── Excel Parser ─────────────────────────────────────────────────────────────
+function getActiveSections(pks: string[]): ActiveSection[] {
+  return SECTIONS
+    .map(s => ({ ...s, activeKeys: s.keys.filter(k => pks.includes(k)) }))
+    .filter(s => s.activeKeys.length > 0);
+}
 
-async function parseExcel(file: File) {
-  const buf = await file.arrayBuffer();
-  const wb = XLSX.read(buf, { type:"array", cellDates:false, raw:false });
-  const ws = wb.Sheets[wb.SheetNames[0]];
-  const json: any[] = XLSX.utils.sheet_to_json(ws, { defval:"", raw:true });
+// ─── Excel Parser ──────────────────────────────────────────────────────────────
 
-  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g," ").replace(/\s+/g," ").trim();
+async function parseExcel(file: File): Promise<ParsedRow[]> {
+  const buf  = await file.arrayBuffer();
+  const wb   = XLSX.read(buf, { type: "array", cellDates: false, raw: false });
+  const ws   = wb.Sheets[wb.SheetNames[0]];
+  const json = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: "", raw: true });
+  const norm = (s: string) =>
+    s.toLowerCase().replace(/[^a-z0-9]/g, " ").replace(/\s+/g, " ").trim();
 
-  return json.map((row) => {
-    const r: any = {};
-    Object.entries(row).forEach(([k,v]) => {
+  return json.map(row => {
+    const r: Partial<ParsedRow> = {};
+    Object.entries(row).forEach(([k, v]) => {
       const n = norm(k);
-      if (n === "date")                                   r._d    = v;
-      if (n === "plant")                                  r._plant= Number(v)||0;
-      if (["functional location","functional loc","funcloc","func location"].includes(n))
-                                                          r._floc = String(v).trim();
-      if (n === "section")                                r._sec  = String(v).toUpperCase().replace(/\s+/g," ").trim();
-      if (n === "head reason" || n === "headreason")      r._hr   = String(v).toUpperCase().replace(/\s+/g," ").trim();
-      if (n === "sub head reason" || n === "subheadreason" || n === "sub reason") r._shr = String(v).trim();
-      if (n.includes("total down") || n === "totaldowntime") r._down= Number(v)||0;
+      if (n === "date")                                                                     r._d    = v;
+      if (n === "plant")                                                                    r._plant= Number(v) || 0;
+      if (["functional location","functional loc","funcloc","func location"].includes(n))  r._floc = String(v).trim();
+      if (n === "section")                                                                  r._sec  = String(v).toUpperCase().replace(/\s+/g, " ").trim();
+      if (n === "head reason" || n === "headreason")                                       r._hr   = String(v).toUpperCase().replace(/\s+/g, " ").trim();
+      if (n === "sub head reason" || n === "subheadreason" || n === "sub reason")          r._shr  = String(v).trim();
+      if (n.includes("total down") || n === "totaldowntime")                               r._down = Number(v) || 0;
     });
     if (!r._floc) {
       const u = UNITS.find(u => u.plant === r._plant);
-      r._floc = u ? u.name : String(r._plant);
+      r._floc = u ? u.name : String(r._plant ?? "");
     }
-    return r;
+    return r as ParsedRow;
   }).filter(r => r._plant && r._sec);
 }
 
-// ─── Multi-Select Dropdown ────────────────────────────────────────────────────
+// ─── Multi-Select Dropdown ─────────────────────────────────────────────────────
 
 interface MultiSelectProps {
-  label: string;
-  options: string[];
-  selected: string[];
-  onChange: (vals: string[]) => void;
-  disabled?: boolean;
+  label: string; options: string[]; selected: string[];
+  onChange: (vals: string[]) => void; disabled?: boolean;
 }
 
-function MultiSelect({ label, options, selected, onChange, disabled }: MultiSelectProps) {
+function MultiSelect({ label, options, selected, onChange, disabled = false }: MultiSelectProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
-  React.useEffect(() => {
+  useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
@@ -165,64 +199,54 @@ function MultiSelect({ label, options, selected, onChange, disabled }: MultiSele
     return () => document.removeEventListener("mousedown", handler);
   }, [open]);
 
-  const allSelected = options.length > 0 && selected.length === options.length;
-
-  const toggle = (v: string) => {
-    onChange(selected.includes(v) ? selected.filter(x => x !== v) : [...selected, v]);
-  };
-
-  const toggleAll = () => onChange(allSelected ? [] : [...options]);
-
-  const displayText =
-    selected.length === 0 || allSelected
-      ? `All ${label}`
-      : selected.length === 1
-      ? selected[0]
-      : `${selected.length} selected`;
+  const allSel    = options.length > 0 && selected.length === options.length;
+  const toggle    = (v: string) => onChange(selected.includes(v) ? selected.filter(x => x !== v) : [...selected, v]);
+  const toggleAll = () => onChange(allSel ? [] : [...options]);
+  const display   = selected.length === 0 || allSel ? `All ${label}` : selected.length === 1 ? selected[0] : `${selected.length} selected`;
 
   return (
-    <div ref={ref} style={{ position:"relative", display:"inline-block", minWidth:140, fontFamily:"Calibri,Arial,sans-serif", fontSize:11 }}>
-      <div style={{ fontSize:10, color:"#555", marginBottom:2, fontWeight:600 }}>{label}</div>
+    <div ref={ref} style={{ position: "relative", display: "inline-block", minWidth: 140 }}>
+      <div style={{ fontSize: 10, color: "#6b7280", marginBottom: 3, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+        {label}
+      </div>
       <button
         disabled={disabled}
         onClick={() => !disabled && setOpen(o => !o)}
         style={{
-          width:"100%", padding:"3px 22px 3px 6px", border:"1px solid #aaa",
-          background: disabled ? "#f5f5f5" : "#fff",
-          cursor: disabled ? "default" : "pointer",
-          textAlign:"left", fontSize:11, fontFamily:"Calibri,Arial,sans-serif",
-          whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis",
-          color: disabled ? "#aaa" : "#222", borderRadius:2, position:"relative",
+          width: "100%", padding: "5px 26px 5px 8px", border: "1px solid #d1d5db",
+          borderRadius: 4, background: disabled ? "#f9fafb" : "#fff",
+          cursor: disabled ? "not-allowed" : "pointer", textAlign: "left",
+          fontSize: 11, fontFamily: "inherit", color: disabled ? "#9ca3af" : "#1f2937",
+          whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+          position: "relative", boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
         }}
       >
-        {displayText}
-        <span style={{ position:"absolute", right:5, top:"50%", transform:"translateY(-50%)", pointerEvents:"none", fontSize:9 }}>▼</span>
+        {display}
+        <span style={{ position: "absolute", right: 7, top: "50%", transform: "translateY(-50%)", fontSize: 8, color: "#6b7280", pointerEvents: "none" }}>▼</span>
       </button>
       {open && !disabled && (
         <div style={{
-          position:"absolute", top:"100%", left:0, zIndex:9999,
-          background:"#fff", border:"1px solid #aaa", boxShadow:"0 2px 8px rgba(0,0,0,0.15)",
-          minWidth:"100%", maxHeight:220, overflowY:"auto", borderRadius:2,
+          position: "absolute", top: "calc(100% + 2px)", left: 0, zIndex: 9999,
+          background: "#fff", border: "1px solid #d1d5db", borderRadius: 4,
+          boxShadow: "0 4px 12px rgba(0,0,0,0.12)", minWidth: "100%", maxHeight: 200, overflowY: "auto",
         }}>
-          <div
-            onClick={toggleAll}
-            style={{ padding:"3px 8px", cursor:"pointer", background: allSelected ? "#dce6f1" : "transparent",
-              display:"flex", alignItems:"center", gap:5, fontSize:11, fontWeight:600,
-              borderBottom:"1px solid #eee", userSelect:"none" }}
-          >
-            <input type="checkbox" readOnly checked={allSelected} style={{ margin:0 }} />
-            <span>{allSelected ? "Deselect All" : "Select All"}</span>
+          <div onClick={toggleAll} style={{
+            padding: "5px 10px", cursor: "pointer", fontSize: 11,
+            background: allSel ? "#eff6ff" : "transparent", fontWeight: 600,
+            display: "flex", alignItems: "center", gap: 6,
+            borderBottom: "1px solid #f3f4f6", userSelect: "none",
+          }}>
+            <input type="checkbox" readOnly checked={allSel} style={{ margin: 0, cursor: "pointer" }} />
+            {allSel ? "Deselect All" : "Select All"}
           </div>
           {options.map(o => (
-            <div
-              key={o}
-              onClick={() => toggle(o)}
-              style={{ padding:"3px 8px", cursor:"pointer",
-                background: selected.includes(o) ? "#dce6f1" : "transparent",
-                display:"flex", alignItems:"center", gap:5, fontSize:11, userSelect:"none" }}
-            >
-              <input type="checkbox" readOnly checked={selected.includes(o)} style={{ margin:0 }} />
-              <span>{o}</span>
+            <div key={o} onClick={() => toggle(o)} style={{
+              padding: "4px 10px", cursor: "pointer", fontSize: 11,
+              background: selected.includes(o) ? "#eff6ff" : "transparent",
+              display: "flex", alignItems: "center", gap: 6, userSelect: "none",
+            }}>
+              <input type="checkbox" readOnly checked={selected.includes(o)} style={{ margin: 0 }} />
+              {o}
             </div>
           ))}
         </div>
@@ -231,25 +255,72 @@ function MultiSelect({ label, options, selected, onChange, disabled }: MultiSele
   );
 }
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Shared Table Styles ───────────────────────────────────────────────────────
 
-// dm[hr][plant][pk][month] = totalDown
-type DM = Record<string, Record<number, Record<string, Record<string, number>>>>;
+const BORDER   = "1px solid #d1d5db";
+const baseCell: React.CSSProperties = { border: BORDER, padding: "3px 6px", fontSize: 11, whiteSpace: "nowrap", fontFamily: "inherit" };
+const numCell:  React.CSSProperties = { ...baseCell, textAlign: "right" };
+const hdrCell:  React.CSSProperties = { ...baseCell, textAlign: "center", fontWeight: 700 };
 
-// shrMap[hr][shr][plant][pk][month] = down  ← NOW PER PK
-type SHRM = Record<string, Record<string, Record<number, Record<string, Record<string, number>>>>>;
-
-interface ParsedRow {
-  _d: any; _plant: number; _floc: string; _sec: string; _hr: string; _shr: string; _down: number;
+interface TableHead4RowProps {
+  months: MonthMeta[]; activeSections: ActiveSection[];
+  bgColor: string; subColor: string;
 }
 
-// ─── Main Component ───────────────────────────────────────────────────────────
+function TableHead4Row({ months, activeSections, bgColor, subColor }: TableHead4RowProps) {
+  const totalCols = activeSections.reduce((s, sec) => s + sec.activeKeys.length, 0);
+  return (
+    <thead>
+      <tr>
+        <th style={{ ...hdrCell, background: bgColor, minWidth: 65 }} rowSpan={4}>Unit</th>
+        <th style={{ ...hdrCell, background: bgColor, minWidth: 48 }} rowSpan={4}>Plant</th>
+        {months.map(mk => (
+          <th key={mk.label} style={{ ...hdrCell, background: bgColor }} colSpan={totalCols}>{mk.label}</th>
+        ))}
+      </tr>
+      <tr>
+        {months.map(mk => (
+          <th key={mk.label} style={{ ...hdrCell, background: subColor, fontSize: 10 }} colSpan={totalCols}>{mk.days} Days</th>
+        ))}
+      </tr>
+      <tr>
+        {months.map(mk =>
+          activeSections.map(s => (
+            <th key={`${mk.label}-${s.label}`} style={{ ...hdrCell, background: bgColor }} colSpan={s.activeKeys.length}>{s.label}</th>
+          ))
+        )}
+      </tr>
+      <tr>
+        {months.map(mk =>
+          activeSections.flatMap(s =>
+            s.activeKeys.map(k => (
+              <th key={`${mk.label}-${k}`} style={{ ...hdrCell, background: subColor, fontSize: 10, minWidth: 52 }}>{PL[k]}</th>
+            ))
+          )
+        )}
+      </tr>
+    </thead>
+  );
+}
 
-export default function IdleAnalysis() {
-  const [allRows, setAllRows] = useState<ParsedRow[]>([]);
-  const [fileName, setFN]     = useState("");
-  const [loaded, setLoaded]   = useState(false);
-  const [drag, setDrag]       = useState(false);
+function SectionTitle({ label, color }: { label: string; color: string }) {
+  return (
+    <div style={{
+      fontWeight: 700, fontSize: 12, margin: "16px 0 5px", color: "#1e3a5f",
+      borderLeft: `3px solid ${color}`, paddingLeft: 8, lineHeight: "1.4",
+    }}>
+      {label}
+    </div>
+  );
+}
+
+// ─── Main Component ────────────────────────────────────────────────────────────
+
+export default function DowntimeAnalysis() {
+  const [allRows,  setAllRows]  = useState<ParsedRow[]>([]);
+  const [fileName, setFN]       = useState<string>("");
+  const [loaded,   setLoaded]   = useState<boolean>(false);
+  const [drag,     setDrag]     = useState<boolean>(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const [selFloc,    setSelFloc]    = useState<string[]>([]);
@@ -260,7 +331,7 @@ export default function IdleAnalysis() {
 
   const load = useCallback(async (file: File) => {
     setFN(file.name);
-    const rows = await parseExcel(file) as ParsedRow[];
+    const rows = await parseExcel(file);
     setAllRows(rows);
     setSelFloc([]); setSelPlant([]); setSelSection([]); setSelHR([]); setSelSHR([]);
     setLoaded(true);
@@ -271,55 +342,41 @@ export default function IdleAnalysis() {
     setSelFloc([]); setSelPlant([]); setSelSection([]); setSelHR([]); setSelSHR([]);
   };
 
-  const onDrop = (e: React.DragEvent) => {
+  const onDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault(); setDrag(false);
     const f = e.dataTransfer.files[0]; if (f) load(f);
   };
 
-  // ── Cascading filter options ──────────────────────────────────────────────
-
+  // ── Cascading filter options ──────────────────────────────────────────────────
   const allFlocs = useMemo(() =>
-    [...new Set(allRows.map(r => r._floc).filter(Boolean))].sort(),
-  [allRows]);
+    [...new Set(allRows.map(r => r._floc).filter(Boolean))].sort(), [allRows]);
 
   const rowsAfterFloc = useMemo(() =>
-    selFloc.length === 0 ? allRows : allRows.filter(r => selFloc.includes(r._floc)),
-  [allRows, selFloc]);
+    selFloc.length === 0 ? allRows : allRows.filter(r => selFloc.includes(r._floc)), [allRows, selFloc]);
 
   const allPlants = useMemo(() =>
-    [...new Set(rowsAfterFloc.map(r => String(r._plant)).filter(Boolean))].sort((a,b) => +a - +b),
-  [rowsAfterFloc]);
+    [...new Set(rowsAfterFloc.map(r => String(r._plant)).filter(Boolean))].sort((a, b) => +a - +b), [rowsAfterFloc]);
 
   const rowsAfterPlant = useMemo(() =>
-    selPlant.length === 0 ? rowsAfterFloc : rowsAfterFloc.filter(r => selPlant.includes(String(r._plant))),
-  [rowsAfterFloc, selPlant]);
+    selPlant.length === 0 ? rowsAfterFloc : rowsAfterFloc.filter(r => selPlant.includes(String(r._plant))), [rowsAfterFloc, selPlant]);
 
   const allSections = useMemo(() =>
-    [...new Set(rowsAfterPlant.map(r => r._sec).filter(Boolean))].sort(),
-  [rowsAfterPlant]);
+    [...new Set(rowsAfterPlant.map(r => r._sec).filter(Boolean))].sort(), [rowsAfterPlant]);
 
   const rowsAfterSection = useMemo(() =>
-    selSection.length === 0 ? rowsAfterPlant : rowsAfterPlant.filter(r => selSection.includes(r._sec)),
-  [rowsAfterPlant, selSection]);
+    selSection.length === 0 ? rowsAfterPlant : rowsAfterPlant.filter(r => selSection.includes(r._sec)), [rowsAfterPlant, selSection]);
 
-  const allHRs = useMemo(() => {
-    const seen = new Set(rowsAfterSection.map(r => r._hr).filter(Boolean));
-    return [
-      ...HEAD_REASON_ORDER.filter(h => seen.has(h)),
-      ...[...seen].filter(h => !HEAD_REASON_ORDER.includes(h)).sort(),
-    ];
-  }, [rowsAfterSection]);
+  const allHRs = useMemo(() =>
+    [...new Set(rowsAfterSection.map(r => r._hr).filter(Boolean))].sort(), [rowsAfterSection]);
 
   const rowsAfterHR = useMemo(() =>
-    selHR.length === 0 ? rowsAfterSection : rowsAfterSection.filter(r => selHR.includes(r._hr)),
-  [rowsAfterSection, selHR]);
+    selHR.length === 0 ? rowsAfterSection : rowsAfterSection.filter(r => selHR.includes(r._hr)), [rowsAfterSection, selHR]);
 
   const allSHRs = useMemo(() =>
-    [...new Set(rowsAfterHR.map(r => r._shr).filter(Boolean))].sort(),
-  [rowsAfterHR]);
+    [...new Set(rowsAfterHR.map(r => r._shr).filter(Boolean))].sort(), [rowsAfterHR]);
 
-  // ── Final filtered rows ───────────────────────────────────────────────────
-  const filteredRows = useMemo(() => {
+  // ── Final filtered rows ───────────────────────────────────────────────────────
+  const filteredRows = useMemo<ParsedRow[]>(() => {
     let rows = allRows;
     if (selFloc.length > 0)    rows = rows.filter(r => selFloc.includes(r._floc));
     if (selPlant.length > 0)   rows = rows.filter(r => selPlant.includes(String(r._plant)));
@@ -331,600 +388,637 @@ export default function IdleAnalysis() {
 
   const months = useMemo(() => getMonths(filteredRows), [filteredRows]);
 
-  const { dm, shrMap, activePks, activeHRs } = useMemo(() => {
-    const map: DM   = {};
-    // shrMap[hr][shr][plant][pk][month] = down
-    const smap: SHRM = {};
+  // ── Derived maps ──────────────────────────────────────────────────────────────
+  const { idleMap, hrMaps, shrMap, activePks, activeUnits } = useMemo(() => {
+    const idleM: HrMap = {};
+    const hrM: Record<string, HrMap> = { PLANNED: {}, UNPLANNED: {}, OTHERS: {} };
+    // shrMap[bucket][shr][plant][pk][month] = down  (IDLE bucket included)
+    const shrM: ShrMap = { IDLE: {}, PLANNED: {}, UNPLANNED: {}, OTHERS: {} };
 
-    filteredRows.forEach((r) => {
+    const seenPks    = new Set<string>();
+    const seenPlants = new Set<number>();
+
+    filteredRows.forEach(r => {
+      const pk = SEC_MAP[r._sec];
+      if (pk) seenPks.add(pk);
+      seenPlants.add(r._plant);
+
       const ymd = parseDateOnly(r._d); if (!ymd) return;
-      const lbl = `${String(ymd.m).padStart(2,"0")}/${String(ymd.y).slice(-2)}`;
-      const pk  = SEC_MAP[r._sec]; if (!pk) return;
-      const hr  = r._hr || "OTHERS";
+      const lbl = `${String(ymd.m).padStart(2, "0")}/${String(ymd.y).slice(-2)}`;
+      if (!pk) return;
       const p   = r._plant;
-
-      // ── dm: unchanged ──
-      if (!map[hr])        map[hr]        = {};
-      if (!map[hr][p])     map[hr][p]     = {};
-      if (!map[hr][p][pk]) map[hr][p][pk] = {};
-      map[hr][p][pk][lbl] = (map[hr][p][pk][lbl] || 0) + r._down;
-
-      // ── shrMap: now keyed per pk ──
+      const hr  = r._hr;
       const shr = r._shr || "Unknown";
-      if (!smap[hr])                   smap[hr]                   = {};
-      if (!smap[hr][shr])              smap[hr][shr]              = {};
-      if (!smap[hr][shr][p])           smap[hr][shr][p]           = {};
-      if (!smap[hr][shr][p][pk])       smap[hr][shr][p][pk]       = {};
-      smap[hr][shr][p][pk][lbl] = (smap[hr][shr][p][pk][lbl] || 0) + r._down;
+
+      const addToHrMap = (map: HrMap) => {
+        if (!map[p])     map[p]     = {};
+        if (!map[p][pk]) map[p][pk] = {};
+        map[p][pk][lbl] = (map[p][pk][lbl] ?? 0) + r._down;
+      };
+
+      const addToShrMap = (bucket: string) => {
+        if (!shrM[bucket])           shrM[bucket]           = {};
+        if (!shrM[bucket][shr])      shrM[bucket][shr]      = {};
+        if (!shrM[bucket][shr][p])   shrM[bucket][shr][p]   = {};
+        if (!shrM[bucket][shr][p][pk]) shrM[bucket][shr][p][pk] = {};
+        shrM[bucket][shr][p][pk][lbl] = (shrM[bucket][shr][p][pk][lbl] ?? 0) + r._down;
+      };
+
+      if (hr === "IDLE") {
+        addToHrMap(idleM); addToShrMap("IDLE");
+      } else if (hr === "PLANNED") {
+        addToHrMap(hrM.PLANNED); addToShrMap("PLANNED");
+      } else if (hr === "UNPLANNED") {
+        addToHrMap(hrM.UNPLANNED); addToShrMap("UNPLANNED");
+      } else {
+        addToHrMap(hrM.OTHERS); addToShrMap("OTHERS");
+      }
     });
 
-    const seenPks = new Set(filteredRows.map((r: any) => SEC_MAP[r._sec]).filter(Boolean));
     const orderedPks = ALL_KEYS.filter(k => seenPks.has(k));
 
-    const seenHRs = new Set(filteredRows.map((r: any) => r._hr).filter(Boolean));
-    const orderedHRs = [
-      ...HEAD_REASON_ORDER.filter(h => seenHRs.has(h)),
-      ...[...seenHRs].filter(h => !HEAD_REASON_ORDER.includes(h)).sort(),
-    ];
-
-    return { dm: map, shrMap: smap, activePks: orderedPks, activeHRs: orderedHRs };
-  }, [filteredRows]);
-
-  const activeUnits = useMemo(() => {
-    if (selFloc.length === 0 && selPlant.length === 0) return UNITS;
-    return UNITS.filter(u => {
-      if (selFloc.length > 0 && !selFloc.includes(u.name)) return false;
+    const activeU = UNITS.filter(u => {
+      if (selFloc.length > 0  && !selFloc.includes(u.name))           return false;
       if (selPlant.length > 0 && !selPlant.includes(String(u.plant))) return false;
+      if (selFloc.length === 0 && selPlant.length === 0)               return seenPlants.has(u.plant);
       return true;
     });
-  }, [selFloc, selPlant]);
 
+    return { idleMap: idleM, hrMaps: hrM, shrMap: shrM, activePks: orderedPks, activeUnits: activeU };
+  }, [filteredRows, selFloc, selPlant]);
+
+  // Filter handlers
   const handleFlocChange    = (v: string[]) => { setSelFloc(v);    setSelPlant([]); setSelSection([]); setSelHR([]); setSelSHR([]); };
   const handlePlantChange   = (v: string[]) => { setSelPlant(v);   setSelSection([]); setSelHR([]); setSelSHR([]); };
   const handleSectionChange = (v: string[]) => { setSelSection(v); setSelHR([]); setSelSHR([]); };
   const handleHRChange      = (v: string[]) => { setSelHR(v);      setSelSHR([]); };
   const clearAll = () => { setSelFloc([]); setSelPlant([]); setSelSection([]); setSelHR([]); setSelSHR([]); };
+  const hasFilters = selFloc.length > 0 || selPlant.length > 0 || selSection.length > 0 || selHR.length > 0 || selSHR.length > 0;
 
-  // ─── Table style helpers ──────────────────────────────────────────────────
-  const border = "1px solid #b0b0b0";
-  const base: React.CSSProperties = { border, padding:"2px 5px", fontSize:11, whiteSpace:"nowrap", fontFamily:"Calibri,Arial,sans-serif" };
-  const num:  React.CSSProperties = { ...base, textAlign:"right" };
-  const hdr:  React.CSSProperties = { ...base, textAlign:"center", fontWeight:700 };
+  // ─── Core pct calculation helpers ────────────────────────────────────────────
 
-  function getActiveSections(pks: string[]) {
-    return SECTIONS.map(s => ({ ...s, activeKeys: s.keys.filter(k => pks.includes(k)) }))
-                   .filter(s => s.activeKeys.length > 0);
+  // Total machine-hours for a unit across all pks and given months
+  function totalHrs(unitName: string, mks: MonthMeta[]): number {
+    return activePks.reduce((s, pk) => {
+      return s + mks.reduce((ms, mk) => ms + (MC[unitName]?.[pk] ?? 0) * mk.days * 24, 0);
+    }, 0);
   }
 
-  // ── Machine Count Table ───────────────────────────────────────────────────
-  function renderMachineCountTable() {
+  // Idle downtime for a unit across all pks and given months
+  function idleHrs(plant: number, mks: MonthMeta[]): number {
+    return activePks.reduce((s, pk) => {
+      return s + mks.reduce((ms, mk) => ms + (idleMap[plant]?.[pk]?.[mk.label] ?? 0), 0);
+    }, 0);
+  }
+
+  // idleRemaining = totalHrs - idleHrs
+  function idleRemainingHrs(unitName: string, plant: number, mks: MonthMeta[]): number {
+    return totalHrs(unitName, mks) - idleHrs(plant, mks);
+  }
+
+  // Downtime for a given HR bucket, unit, and months (sum across all pks)
+  function hrDownHrs(bucket: string, plant: number, mks: MonthMeta[]): number {
+    const map = bucket === "IDLE" ? idleMap : (hrMaps[bucket] ?? {});
+    return activePks.reduce((s, pk) => {
+      return s + mks.reduce((ms, mk) => ms + (map[plant]?.[pk]?.[mk.label] ?? 0), 0);
+    }, 0);
+  }
+
+  // SHR downtime for a specific SHR in a given bucket
+  function shrDownHrs(bucket: string, shr: string, plant: number, mks: MonthMeta[]): number {
+    const sm = shrMap[bucket]?.[shr] ?? {};
+    return activePks.reduce((s, pk) => {
+      return s + mks.reduce((ms, mk) => ms + (sm[plant]?.[pk]?.[mk.label] ?? 0), 0);
+    }, 0);
+  }
+
+  // % for non-IDLE buckets = down / idleRemaining * 100
+  // % for IDLE bucket      = down / totalHrs * 100
+  function calcPct(down: number, unitName: string, plant: number, mks: MonthMeta[], isIdle = false): number | null {
+    if (isIdle) {
+      const tot = totalHrs(unitName, mks);
+      if (tot <= 0 || down === 0) return null;
+      return (down / tot) * 100;
+    }
+    const rem = idleRemainingHrs(unitName, plant, mks);
+    if (rem <= 0 || down === 0) return null;
+    return (down / rem) * 100;
+  }
+
+  // Format pct value for display
+  function fmtPct(v: number | null): string {
+    if (v === null) return "-";
+    return (Math.trunc(v * 1000) / 1000).toString();
+}
+
+  // ─── Table Renderers (existing) ────────────────────────────────────────────────
+
+  function renderMachineCountTable(): React.ReactNode {
     const displayPks = activePks.length > 0 ? activePks : ALL_KEYS;
-    const activeSections = getActiveSections(displayPks);
+    const activeSecs = getActiveSections(displayPks);
     return (
-      <table style={{ borderCollapse:"collapse", marginBottom:16 }}>
-        <thead>
-          <tr>
-            <th style={{...hdr, background:"#dce6f1", minWidth:65}} rowSpan={2}>Unit Name</th>
-            <th style={{...hdr, background:"#dce6f1", minWidth:48}} rowSpan={2}>Plant</th>
-            {activeSections.map(s => (
-              <th key={s.label} style={{...hdr, background:"#dce6f1"}} colSpan={s.activeKeys.length}>{s.label}</th>
-            ))}
-          </tr>
-          <tr>
-            {activeSections.flatMap(s => s.activeKeys.map(k => (
-              <th key={k} style={{...hdr, background:"#bdd7ee", fontSize:10, minWidth:52}}>{PL[k]}</th>
-            )))}
-          </tr>
-        </thead>
-        <tbody>
-          {activeUnits.map((u,i) => (
-            <tr key={u.name} style={{background:i%2===1?"#f2f2f2":"#fff"}}>
-              <td style={{...base, textAlign:"left", fontWeight:600}}>{u.name}</td>
-              <td style={{...num, textAlign:"center", color:"#555"}}>{u.plant}</td>
-              {activeSections.flatMap(s => s.activeKeys.map(k => (
-                <td key={k} style={num}>{MC[u.name]?.[k]??0}</td>
+      <div style={{ overflowX: "auto", marginBottom: 4 }}>
+        <table style={{ borderCollapse: "collapse" }}>
+          <thead>
+            <tr>
+              <th style={{ ...hdrCell, background: "#dce6f1", minWidth: 65 }} rowSpan={2}>Unit Name</th>
+              <th style={{ ...hdrCell, background: "#dce6f1", minWidth: 48 }} rowSpan={2}>Plant</th>
+              {activeSecs.map(s => (
+                <th key={s.label} style={{ ...hdrCell, background: "#dce6f1" }} colSpan={s.activeKeys.length}>{s.label}</th>
+              ))}
+            </tr>
+            <tr>
+              {activeSecs.flatMap(s => s.activeKeys.map(k => (
+                <th key={k} style={{ ...hdrCell, background: "#bdd7ee", fontSize: 10, minWidth: 52 }}>{PL[k]}</th>
               )))}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {activeUnits.map((u, i) => (
+              <tr key={u.name} style={{ background: i % 2 === 1 ? "#f8fafc" : "#fff" }}>
+                <td style={{ ...baseCell, fontWeight: 600 }}>{u.name}</td>
+                <td style={{ ...numCell, textAlign: "center", color: "#6b7280" }}>{u.plant}</td>
+                {activeSecs.flatMap(s => s.activeKeys.map(k => (
+                  <td key={k} style={numCell}>{MC[u.name]?.[k] ?? 0}</td>
+                )))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     );
   }
 
-  // ── Total Hrs Table ───────────────────────────────────────────────────────
-  function renderTotalHrsTable(pks: string[]) {
-    const activeSections = getActiveSections(pks);
-    const totalCols = pks.length;
+  function renderTotalHrsTable(): React.ReactNode {
+    if (!activePks.length || !months.length) return null;
+    const activeSecs = getActiveSections(activePks);
     return (
-      <table style={{ borderCollapse:"collapse", marginBottom:16 }}>
-        <thead>
-          <tr>
-            <th style={{...hdr, background:"#dce6f1", minWidth:65}} rowSpan={4}>Unit</th>
-            <th style={{...hdr, background:"#dce6f1", minWidth:48}} rowSpan={4}>Plant</th>
-            {months.map(mk => (
-              <th key={mk.label} style={{...hdr, background:"#dce6f1"}} colSpan={totalCols}>{mk.label}</th>
-            ))}
-          </tr>
-          <tr>
-            {months.map(mk => (
-              <th key={mk.label} style={{...hdr, background:"#bdd7ee", fontSize:10}} colSpan={totalCols}>{mk.days} Days</th>
-            ))}
-          </tr>
-          <tr>
-            {months.map(mk =>
-              activeSections.map(s => (
-                <th key={`${mk.label}-${s.label}`} style={{...hdr, background:"#dce6f1"}} colSpan={s.activeKeys.length}>{s.label}</th>
-              ))
-            )}
-          </tr>
-          <tr>
-            {months.map(mk =>
-              activeSections.flatMap(s =>
-                s.activeKeys.map(k => (
-                  <th key={`${mk.label}-${k}`} style={{...hdr, background:"#bdd7ee", fontSize:10, minWidth:52}}>{PL[k]}</th>
-                ))
-              )
-            )}
-          </tr>
-        </thead>
-        <tbody>
-          {activeUnits.map((u, i) => (
-            <tr key={u.name} style={{background:i%2===1?"#f2f2f2":"#fff"}}>
-              <td style={{...base, textAlign:"left", fontWeight:600}}>{u.name}</td>
-              <td style={{...num, textAlign:"center", color:"#555"}}>{u.plant}</td>
-              {months.map(mk =>
-                activeSections.flatMap(s =>
-                  s.activeKeys.map(k => {
-                    const mc = MC[u.name]?.[k] ?? 0;
-                    const total = mc * mk.days * 24;
+      <div style={{ overflowX: "auto", marginBottom: 4 }}>
+        <table style={{ borderCollapse: "collapse" }}>
+          <TableHead4Row months={months} activeSections={activeSecs} bgColor="#dce6f1" subColor="#bdd7ee" />
+          <tbody>
+            {activeUnits.map((u, i) => (
+              <tr key={u.name} style={{ background: i % 2 === 1 ? "#f8fafc" : "#fff" }}>
+                <td style={{ ...baseCell, fontWeight: 600 }}>{u.name}</td>
+                <td style={{ ...numCell, textAlign: "center", color: "#6b7280" }}>{u.plant}</td>
+                {months.map(mk =>
+                  activeSecs.flatMap(s => s.activeKeys.map(k => {
+                    const total = (MC[u.name]?.[k] ?? 0) * mk.days * 24;
                     return (
-                      <td key={`${mk.label}-${k}`} style={{...num, color:total===0?"#bbb":"#000"}}>
-                        {total===0?"-":total}
+                      <td key={`${mk.label}-${k}`} style={{ ...numCell, color: total === 0 ? "#d1d5db" : "#111" }}>
+                        {total === 0 ? "-" : total}
                       </td>
                     );
-                  })
-                )
-              )}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+                  }))
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     );
   }
 
-  // ── Consolidated HR Table ─────────────────────────────────────────────────
-  function renderConsolidatedHRTable(hr: string, pks: string[], bgColor: string, subColor: string) {
-    const activeSections = getActiveSections(pks);
-    const totalCols = pks.length;
-    const dataMap = dm[hr] ?? {};
+  function renderIdleHrsTable(): React.ReactNode {
+    if (!activePks.length || !months.length) return null;
+    const activeSecs = getActiveSections(activePks);
     return (
-      <table style={{ borderCollapse:"collapse", marginBottom:16 }}>
-        <thead>
-          <tr>
-            <th style={{...hdr, background:bgColor, minWidth:65}} rowSpan={4}>Unit</th>
-            <th style={{...hdr, background:bgColor, minWidth:48}} rowSpan={4}>Plant</th>
-            {months.map(mk => (
-              <th key={mk.label} style={{...hdr, background:bgColor}} colSpan={totalCols}>{mk.label}</th>
-            ))}
-          </tr>
-          <tr>
-            {months.map(mk => (
-              <th key={mk.label} style={{...hdr, background:subColor, fontSize:10}} colSpan={totalCols}>{mk.days} Days</th>
-            ))}
-          </tr>
-          <tr>
-            {months.map(mk =>
-              activeSections.map(s => (
-                <th key={`${mk.label}-${s.label}`} style={{...hdr, background:bgColor}} colSpan={s.activeKeys.length}>{s.label}</th>
-              ))
-            )}
-          </tr>
-          <tr>
-            {months.map(mk =>
-              activeSections.flatMap(s =>
-                s.activeKeys.map(k => (
-                  <th key={`${mk.label}-${k}`} style={{...hdr, background:subColor, fontSize:10, minWidth:52}}>{PL[k]}</th>
-                ))
-              )
-            )}
-          </tr>
-        </thead>
-        <tbody>
-          {activeUnits.map((u, i) => (
-            <tr key={u.name} style={{background:i%2===1?"#f2f2f2":"#fff"}}>
-              <td style={{...base, textAlign:"left", fontWeight:600}}>{u.name}</td>
-              <td style={{...num, textAlign:"center", color:"#555"}}>{u.plant}</td>
-              {months.map(mk =>
-                activeSections.flatMap(s =>
-                  s.activeKeys.map(k => {
-                    const v = dataMap[u.plant]?.[k]?.[mk.label] ?? 0;
+      <div style={{ overflowX: "auto", marginBottom: 4 }}>
+        <table style={{ borderCollapse: "collapse" }}>
+          <TableHead4Row months={months} activeSections={activeSecs} bgColor="#fce4d6" subColor="#f4b183" />
+          <tbody>
+            {activeUnits.map((u, i) => (
+              <tr key={u.name} style={{ background: i % 2 === 1 ? "#f8fafc" : "#fff" }}>
+                <td style={{ ...baseCell, fontWeight: 600 }}>{u.name}</td>
+                <td style={{ ...numCell, textAlign: "center", color: "#6b7280" }}>{u.plant}</td>
+                {months.map(mk =>
+                  activeSecs.flatMap(s => s.activeKeys.map(k => {
+                    const v = idleMap[u.plant]?.[k]?.[mk.label] ?? 0;
                     return (
-                      <td key={`${mk.label}-${k}`} style={{...num, color:v===0?"#bbb":"#000"}}>
-                        {v===0?"-":v.toFixed(2)}
+                      <td key={`${mk.label}-${k}`} style={{ ...numCell, color: v === 0 ? "#d1d5db" : "#111" }}>
+                        {v === 0 ? "-" :trunc3(v)}
                       </td>
                     );
-                  })
-                )
-              )}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+                  }))
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     );
   }
 
-  // ── Remaining Hrs Table ───────────────────────────────────────────────────
-  function renderRemainingTables(hr: string, pks: string[], bgColor: string, subColor: string) {
-    const activeSections = getActiveSections(pks);
-    const totalCols = pks.length;
+  function renderRemainingHrsTable(): React.ReactNode {
+    if (!activePks.length || !months.length) return null;
+    const activeSecs = getActiveSections(activePks);
     return (
-      <table style={{ borderCollapse:"collapse", marginBottom:16 }}>
-        <thead>
-          <tr>
-            <th style={{...hdr, background:bgColor, minWidth:65}} rowSpan={4}>Unit</th>
-            <th style={{...hdr, background:bgColor, minWidth:48}} rowSpan={4}>Plant</th>
-            {months.map(mk => (
-              <th key={mk.label} style={{...hdr, background:bgColor}} colSpan={totalCols}>{mk.label}</th>
-            ))}
-          </tr>
-          <tr>
-            {months.map(mk => (
-              <th key={mk.label} style={{...hdr, background:subColor, fontSize:10}} colSpan={totalCols}>{mk.days} Days</th>
-            ))}
-          </tr>
-          <tr>
-            {months.map(mk =>
-              activeSections.map(s => (
-                <th key={`${mk.label}-${s.label}`} style={{...hdr, background:bgColor}} colSpan={s.activeKeys.length}>{s.label}</th>
-              ))
-            )}
-          </tr>
-          <tr>
-            {months.map(mk =>
-              activeSections.flatMap(s =>
-                s.activeKeys.map(k => (
-                  <th key={`${mk.label}-${k}`} style={{...hdr, background:subColor, fontSize:10, minWidth:52}}>{PL[k]}</th>
-                ))
-              )
-            )}
-          </tr>
-        </thead>
-        <tbody>
-          {activeUnits.map((u, i) => (
-            <tr key={u.name} style={{background:i%2===1?"#f2f2f2":"#fff"}}>
-              <td style={{...base, textAlign:"left", fontWeight:600}}>{u.name}</td>
-              <td style={{...num, textAlign:"center", color:"#555"}}>{u.plant}</td>
-              {months.map(mk =>
-                activeSections.flatMap(s =>
-                  s.activeKeys.map(k => {
+      <div style={{ overflowX: "auto", marginBottom: 4 }}>
+        <table style={{ borderCollapse: "collapse" }}>
+          <TableHead4Row months={months} activeSections={activeSecs} bgColor="#fdf3ee" subColor="#f9cdb0" />
+          <tbody>
+            {activeUnits.map((u, i) => (
+              <tr key={u.name} style={{ background: i % 2 === 1 ? "#f8fafc" : "#fff" }}>
+                <td style={{ ...baseCell, fontWeight: 600 }}>{u.name}</td>
+                <td style={{ ...numCell, textAlign: "center", color: "#6b7280" }}>{u.plant}</td>
+                {months.map(mk =>
+                  activeSecs.flatMap(s => s.activeKeys.map(k => {
                     const mc        = MC[u.name]?.[k] ?? 0;
                     const total     = mc * mk.days * 24;
-                    const downForHR = dm[hr]?.[u.plant]?.[k]?.[mk.label] ?? 0;
-                    const remaining = total - downForHR;
+                    const idleDown  = idleMap[u.plant]?.[k]?.[mk.label] ?? 0;
+                    const remaining = total - idleDown;
                     const isNeg     = remaining < 0;
                     return (
-                      <td key={`${mk.label}-${k}`} style={{...num,
-                        color: total===0?"#bbb":isNeg?"#c00":"#000",
-                        fontWeight: isNeg?700:"normal"
-                      }}>
-                        {total===0?"-":remaining.toFixed(2)}
+                      <td key={`${mk.label}-${k}`} style={{ ...numCell, color: total === 0 ? "#d1d5db" : isNeg ? "#dc2626" : "#111", fontWeight: isNeg ? 700 : "normal" }}>
+                        {total === 0 ? "-" : trunc3(remaining)}
                       </td>
                     );
-                  })
-                )
-              )}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+                  }))
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     );
   }
 
-  // ── Percentage Table ──────────────────────────────────────────────────────
-  function renderPercentageTables(hr: string, pks: string[], bgColor: string, subColor: string) {
-    const activeSections = getActiveSections(pks);
-    const totalCols = pks.length;
+  function renderPctIdleTable(): React.ReactNode {
+    if (!activePks.length || !months.length) return null;
+    const activeSecs = getActiveSections(activePks);
     return (
-      <table style={{ borderCollapse:"collapse", marginBottom:16 }}>
-        <thead>
-          <tr>
-            <th style={{...hdr, background:bgColor, minWidth:65}} rowSpan={4}>Unit</th>
-            <th style={{...hdr, background:bgColor, minWidth:48}} rowSpan={4}>Plant</th>
-            {months.map(mk => (
-              <th key={mk.label} style={{...hdr, background:bgColor}} colSpan={totalCols}>{mk.label}</th>
-            ))}
-          </tr>
-          <tr>
-            {months.map(mk => (
-              <th key={mk.label} style={{...hdr, background:subColor, fontSize:10}} colSpan={totalCols}>{mk.days} Days</th>
-            ))}
-          </tr>
-          <tr>
-            {months.map(mk =>
-              activeSections.map(s => (
-                <th key={`${mk.label}-${s.label}`} style={{...hdr, background:bgColor}} colSpan={s.activeKeys.length}>{s.label}</th>
-              ))
-            )}
-          </tr>
-          <tr>
-            {months.map(mk =>
-              activeSections.flatMap(s =>
-                s.activeKeys.map(k => (
-                  <th key={`${mk.label}-${k}`} style={{...hdr, background:subColor, fontSize:10, minWidth:52}}>{PL[k]}</th>
-                ))
-              )
-            )}
-          </tr>
-        </thead>
-        <tbody>
-          {activeUnits.map((u, i) => (
-            <tr key={u.name} style={{background:i%2===1?"#f2f2f2":"#fff"}}>
-              <td style={{...base, textAlign:"left", fontWeight:600}}>{u.name}</td>
-              <td style={{...num, textAlign:"center", color:"#555"}}>{u.plant}</td>
-              {months.map(mk =>
-                activeSections.flatMap(s =>
-                  s.activeKeys.map(k => {
+      <div style={{ overflowX: "auto", marginBottom: 4 }}>
+        <table style={{ borderCollapse: "collapse" }}>
+          <TableHead4Row months={months} activeSections={activeSecs} bgColor="#fce9df" subColor="#f7c4a0" />
+          <tbody>
+            {activeUnits.map((u, i) => (
+              <tr key={u.name} style={{ background: i % 2 === 1 ? "#f8fafc" : "#fff" }}>
+                <td style={{ ...baseCell, fontWeight: 600 }}>{u.name}</td>
+                <td style={{ ...numCell, textAlign: "center", color: "#6b7280" }}>{u.plant}</td>
+                {months.map(mk =>
+                  activeSecs.flatMap(s => s.activeKeys.map(k => {
                     const mc        = MC[u.name]?.[k] ?? 0;
                     const total     = mc * mk.days * 24;
-                    const downForHR = dm[hr]?.[u.plant]?.[k]?.[mk.label] ?? 0;
-                    const remaining = total - downForHR;
-                    const pct       = remaining === 0 ? null : (downForHR / remaining) * 100;
+                    const idleDown  = idleMap[u.plant]?.[k]?.[mk.label] ?? 0;
+                    const remaining = total - idleDown;
+                    const pct       = total === 0 || remaining === 0 || idleDown === 0 ? null : (idleDown / remaining) * 100;
                     const isHigh    = pct !== null && pct > 100;
-                    const isEmpty   = pct === null || pct === 0;
                     return (
-                      <td key={`${mk.label}-${k}`} style={{...num,
-                        color: isEmpty?"#bbb":isHigh?"#c00":"#000",
-                        fontWeight: isHigh?700:"normal"
-                      }}>
-                        {isEmpty ? "-" : `${pct!.toFixed(3)}%`}
-                      </td>
+                      <td key={`${mk.label}-${k}`} style={{ ...numCell, color: pct === null ? "#d1d5db" : isHigh ? "#dc2626" : "#111", fontWeight: isHigh ? 700 : "normal" }}>
+{pct === null ? "-" : `${Math.trunc(pct * 1000) / 1000}%`}
+</td>
                     );
-                  })
-                )
-              )}
-            </tr>
-          ))}
-        </tbody>
-      </table>
+                  }))
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     );
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // ── SHR Summary Table ─────────────────────────────────────────────────────
-  // ─────────────────────────────────────────────────────────────────────────
-
-  function getFY(mk: MM): string {
-    return mk.m >= 4 ? `FY${(mk.y+1).toString().slice(-2)}` : `FY${mk.y.toString().slice(-2)}`;
+  function renderHrHrsTable(hrKey: string, bgColor: string, subColor: string): React.ReactNode {
+    if (!activePks.length || !months.length) return null;
+    const activeSecs = getActiveSections(activePks);
+    const map = hrMaps[hrKey] ?? {};
+    return (
+      <div style={{ overflowX: "auto", marginBottom: 4 }}>
+        <table style={{ borderCollapse: "collapse" }}>
+          <TableHead4Row months={months} activeSections={activeSecs} bgColor={bgColor} subColor={subColor} />
+          <tbody>
+            {activeUnits.map((u, i) => (
+              <tr key={u.name} style={{ background: i % 2 === 1 ? "#f8fafc" : "#fff" }}>
+                <td style={{ ...baseCell, fontWeight: 600 }}>{u.name}</td>
+                <td style={{ ...numCell, textAlign: "center", color: "#6b7280" }}>{u.plant}</td>
+                {months.map(mk =>
+                  activeSecs.flatMap(s => s.activeKeys.map(k => {
+                    const v = map[u.plant]?.[k]?.[mk.label] ?? 0;
+                    return (
+                      <td key={`${mk.label}-${k}`} style={{ ...numCell, color: v === 0 ? "#d1d5db" : "#111" }}>
+                        {v === 0 ? "-" : trunc3(v)}
+                      </td>
+                    );
+                  }))
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
   }
 
-  // ── KEY FIX: pctCell now matches renderPercentageTables exactly ──────────
-  //
-  // Formula per pk per month (same as renderPercentageTables):
-  //   pct_pk = shrDown_pk / (total_pk - hrDown_pk) * 100
-  //
-  // For summary we aggregate:
-  //   numerator   = sum over pks where shrDown_pk > 0 of shrDown_pk
-  //   denominator = sum over SAME pks of (total_pk - hrDown_pk)
-  //
-  // By restricting denominator to only pks that have shrDown,
-  // a single-pk case gives exactly the same result as the % table.
-  //
-  function pctCell(
-    hr: string,
-    shr: string | null,   // null = HR total row
-    plant: number,
-    unitName: string,
-    mks: MM[]
-  ): string {
-    let numerator   = 0;
-    let denominator = 0;
-
-    activePks.forEach(pk => {
-      mks.forEach(mk => {
-        const mc    = MC[unitName]?.[pk] ?? 0;
-        const total = mc * mk.days * 24;
-        if (total === 0) return; // machine doesn't exist at this unit
-
-        // shrDown for this pk/month
-        const shrDown = shr === null
-          // HR total row: sum across all SHRs for this pk/month
-          ? Object.values(shrMap[hr] ?? {}).reduce(
-              (s, pkMap) => s + (pkMap[plant]?.[pk]?.[mk.label] ?? 0), 0
-            )
-          // specific SHR row
-          : (shrMap[hr]?.[shr]?.[plant]?.[pk]?.[mk.label] ?? 0);
-
-        // ── CRITICAL: only include this pk in denominator if it has shrDown ──
-        // This ensures the summary % matches the per-pk % table exactly
-        if (shrDown === 0) return;
-
-        const hrDown = dm[hr]?.[plant]?.[pk]?.[mk.label] ?? 0;
-
-        numerator   += shrDown;
-        denominator += (total - hrDown);
-      });
-    });
-
-    if (numerator === 0)   return "-";
-    if (denominator === 0) return "-";
-
-    const pct = (numerator / denominator) * 100;
-    return `${pct.toFixed(3)}%`;
+  function renderPctOfIdleRemainingTable(hrKey: string, bgColor: string, subColor: string): React.ReactNode {
+    if (!activePks.length || !months.length) return null;
+    const activeSecs = getActiveSections(activePks);
+    const map = hrMaps[hrKey] ?? {};
+    return (
+      <div style={{ overflowX: "auto", marginBottom: 4 }}>
+        <table style={{ borderCollapse: "collapse" }}>
+          <TableHead4Row months={months} activeSections={activeSecs} bgColor={bgColor} subColor={subColor} />
+          <tbody>
+            {activeUnits.map((u, i) => (
+              <tr key={u.name} style={{ background: i % 2 === 1 ? "#f8fafc" : "#fff" }}>
+                <td style={{ ...baseCell, fontWeight: 600 }}>{u.name}</td>
+                <td style={{ ...numCell, textAlign: "center", color: "#6b7280" }}>{u.plant}</td>
+                {months.map(mk =>
+                  activeSecs.flatMap(s => s.activeKeys.map(k => {
+                    const mc       = MC[u.name]?.[k] ?? 0;
+                    const total    = mc * mk.days * 24;
+                    const idleDown = idleMap[u.plant]?.[k]?.[mk.label] ?? 0;
+                    const idleRem  = total - idleDown;
+                    const hrDown   = map[u.plant]?.[k]?.[mk.label] ?? 0;
+                    const pct      = total === 0 || idleRem <= 0 || hrDown === 0 ? null : (hrDown / idleRem) * 100;
+                    const isHigh   = pct !== null && pct > 100;
+                    return (
+                      <td key={`${mk.label}-${k}`} style={{ ...numCell, color: pct === null ? "#d1d5db" : isHigh ? "#dc2626" : "#111", fontWeight: isHigh ? 700 : "normal" }}>
+                        {pct === null ? "-" : `${ Math.trunc(pct * 1000) / 1000}%`}
+                      </td>
+                    );
+                  }))
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
   }
 
-  function renderSHRTable() {
-    if (!months.length) return null;
+  // ─── Consolidated HR Summary Table ────────────────────────────────────────────
+  //
+  // Row order: IDLE SHRs → IDLE total (salmon) → PLANNED SHRs → PLANNED total (green)
+  //            → UNPLANNED SHRs → UNPLANNED total (yellow) → OTHERS SHRs → OTHERS total (grey)
+  //            → Combined rows (blue)
+  //
+  // % denominator:
+  //   IDLE rows  → down / Total Hrs * 100
+  //   Other rows → down / Idle Remaining Hrs * 100
+  //
+  function renderConsolidatedTable(): React.ReactNode {
+    if (!activePks.length || !months.length || !activeUnits.length) return null;
 
-    const fySet: string[] = [];
-    const fyMonths: Record<string, MM[]> = {};
+    // ── Build FY groups ──────────────────────────────────────────────────────────
+    const fyOrder: string[] = [];
+    const fyMonths: Record<string, MonthMeta[]> = {};
     months.forEach(mk => {
-      const fy = getFY(mk);
-      if (!fyMonths[fy]) { fyMonths[fy] = []; fySet.push(fy); }
+      const fy = getFYLabel(mk);
+      if (!fyMonths[fy]) { fyMonths[fy] = []; fyOrder.push(fy); }
       fyMonths[fy].push(mk);
     });
 
-    const fullFYs   = fySet.slice(0, -1);
-    const currentFY = fySet[fySet.length - 1];
-    const curMonths = fyMonths[currentFY];
-    const colsPerUnit = fullFYs.length + curMonths.length + 1;
+    const completeFYs  = fyOrder.slice(0, -1);
+    const currentFY    = fyOrder[fyOrder.length - 1];
+    const currentMks   = fyMonths[currentFY];
 
-    const HR_ROW_COLORS: Record<string,{bg:string,text:string}> = {
-      IDLE:      { bg:"#f4b183", text:"#7b3200" },
-      PLANNED:   { bg:"#a9d18e", text:"#1e4d1e" },
-      UNPLANNED: { bg:"#ffd966", text:"#7b5800" },
-      OTHERS:    { bg:"#bfbfbf", text:"#333"    },
-    };
+    const colsPerUnit = completeFYs.length + currentMks.length + 1;
 
-    const cellStyle:    React.CSSProperties = { ...base, textAlign:"right", minWidth:48 };
-    const labelStyle:   React.CSSProperties = { ...base, textAlign:"left", minWidth:160, paddingLeft:6 };
-    const hrLabelStyle: React.CSSProperties = { ...base, textAlign:"left", fontWeight:700, minWidth:160, paddingLeft:4 };
-    const normsStyle:   React.CSSProperties = { ...base, textAlign:"center", minWidth:40 };
+    // ── Styles ────────────────────────────────────────────────────────────────────
+    const B = BORDER;
+    const lbl: React.CSSProperties  = { border: B, padding: "3px 7px", fontSize: 11, whiteSpace: "nowrap", fontFamily: "inherit", textAlign: "left" };
+    const num2: React.CSSProperties = { border: B, padding: "3px 6px", fontSize: 11, whiteSpace: "nowrap", fontFamily: "inherit", textAlign: "right", minWidth: 48 };
+    const hdr2: React.CSSProperties = { border: B, padding: "3px 6px", fontSize: 11, whiteSpace: "nowrap", fontFamily: "inherit", textAlign: "center", fontWeight: 700 };
 
+    // ── Render one data cell ──────────────────────────────────────────────────────
+    function cell(
+      down: number,
+      unitName: string,
+      plant: number,
+      mks: MonthMeta[],
+      style: React.CSSProperties,
+      key: string,
+      isIdle: boolean
+    ): React.ReactNode {
+      const pct  = calcPct(down, unitName, plant, mks, isIdle);
+      const high = pct !== null && pct > 100;
+      return (
+        <td key={key} style={{
+          ...num2, ...style,
+          color: pct === null ? "#d1d5db" : high ? "#dc2626" : undefined,
+          fontWeight: high ? 700 : (style.fontWeight ?? "normal"),
+        }}>
+          {fmtPct(pct)}
+        </td>
+      );
+    }
+
+    // ── Render one unit's columns ──────────────────────────────────────────────
+    function unitCols(
+      getDown: (mks: MonthMeta[]) => number,
+      unitName: string,
+      plant: number,
+      rowStyle: React.CSSProperties,
+      keyPrefix: string,
+      isIdle: boolean
+    ): React.ReactNode {
+      const nodes: React.ReactNode[] = [];
+      completeFYs.forEach(fy => {
+        const mks  = fyMonths[fy];
+        const down = getDown(mks);
+        nodes.push(cell(down, unitName, plant, mks, rowStyle, `${keyPrefix}-${fy}`, isIdle));
+      });
+      currentMks.forEach(mk => {
+        const down = getDown([mk]);
+        nodes.push(cell(down, unitName, plant, [mk], rowStyle, `${keyPrefix}-${mk.label}`, isIdle));
+      });
+      const utdDown = getDown(currentMks);
+      nodes.push(cell(utdDown, unitName, plant, currentMks, { ...rowStyle, background: (rowStyle.background ?? "#f0f4fb") }, `${keyPrefix}-utd`, isIdle));
+      return nodes;
+    }
+
+    // ── Collect all SHRs per bucket in sorted order ────────────────────────────
+    const bucketSHRs: Record<string, string[]> = {};
+    // Include IDLE in the SHR collection
+    ["IDLE", ...HR_ORDER].forEach(bucket => {
+      bucketSHRs[bucket] = Object.keys(shrMap[bucket] ?? {}).sort();
+    });
+
+    // ── Build row definitions ─────────────────────────────────────────────────
+    interface ConsolRow {
+      type: "shr" | "hr" | "combined";
+      label: string;
+      rowNo?: string;
+      bucket?: string;
+      shr?: string;
+      buckets?: string[];
+      style: React.CSSProperties;
+      isIdle: boolean;
+    }
+
+    const rows: ConsolRow[] = [];
+    let rowNo = 1;
+
+    // ── IDLE block first (salmon) ──────────────────────────────────────────────
+    const idleSHRs = bucketSHRs["IDLE"];
+    idleSHRs.forEach(shr => {
+      rows.push({ type: "shr", label: shr, bucket: "IDLE", shr, style: { background: "#fff" }, isIdle: true });
+    });
+    rows.push({
+      type: "hr", label: "Idle", rowNo: String(rowNo++), bucket: "IDLE",
+      style: { background: CONSOL_HR_STYLE.IDLE.rowBg, color: CONSOL_HR_STYLE.IDLE.rowText, fontWeight: 700 },
+      isIdle: true,
+    });
+
+    // ── PLANNED / UNPLANNED / OTHERS blocks ───────────────────────────────────
+    HR_ORDER.forEach(bucket => {
+      const cfg  = CONSOL_HR_STYLE[bucket];
+      const shrs = bucketSHRs[bucket];
+
+      shrs.forEach(shr => {
+        rows.push({ type: "shr", label: shr, bucket, shr, style: { background: "#fff" }, isIdle: false });
+      });
+      rows.push({
+        type: "hr", label: HR_CONFIG[bucket].label, rowNo: String(rowNo++), bucket,
+        style: { background: cfg.rowBg, color: cfg.rowText, fontWeight: 700 },
+        isIdle: false,
+      });
+    });
+
+    // Combined rows (always non-IDLE denominator)
+    rows.push({
+      type: "combined", label: "Unplanned + Others (2+3)",
+      rowNo: String(rowNo++), buckets: ["UNPLANNED", "OTHERS"],
+      style: { ...CONSOL_COMBINED_STYLE, fontWeight: 700 },
+      isIdle: false,
+    });
+    rows.push({
+      type: "combined", label: "Planned + Unplanned + Others (1+2+3)",
+      rowNo: String(rowNo++), buckets: ["PLANNED", "UNPLANNED", "OTHERS"],
+      style: { ...CONSOL_COMBINED_STYLE, fontWeight: 700 },
+      isIdle: false,
+    });
+
+    // ── Render ──────────────────────────────────────────────────────────────────
     return (
-      <table style={{ borderCollapse:"collapse", marginBottom:16 }}>
-        <thead>
-          <tr>
-            <th style={{...hdr, background:"#dce6f1", minWidth:160}} rowSpan={3}>Head / Sub Head Reason</th>
-            <th style={{...hdr, background:"#dce6f1", minWidth:40}}  rowSpan={3}>Norms</th>
-            {activeUnits.map(u => (
-              <th key={u.name} style={{...hdr, background:"#dce6f1"}} colSpan={colsPerUnit}>{u.name}</th>
-            ))}
-          </tr>
-          <tr>
-            {activeUnits.map(u => (
-              <React.Fragment key={u.name}>
-                {fullFYs.map(fy => (
-                  <th key={fy} style={{...hdr, background:"#bdd7ee", minWidth:48}}>{fy}</th>
-                ))}
-                <th style={{...hdr, background:"#dce6f1"}} colSpan={curMonths.length + 1}>{currentFY}</th>
-              </React.Fragment>
-            ))}
-          </tr>
-          <tr>
-            {activeUnits.map(u => (
-              <React.Fragment key={u.name}>
-                {fullFYs.map(fy => (
-                  <th key={fy} style={{...hdr, background:"#bdd7ee", fontSize:10}}>{fy}</th>
-                ))}
-                {curMonths.map(mk => (
-                  <th key={mk.label} style={{...hdr, background:"#bdd7ee", fontSize:10, minWidth:48}}>{mk.label}</th>
-                ))}
-                <th style={{...hdr, background:"#dae3f3", fontSize:10, minWidth:52}}>UTD Avg</th>
-              </React.Fragment>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {activeHRs.map(hr => {
-            const shrs = Object.keys(shrMap[hr] ?? {}).sort();
-            const hrColor = HR_ROW_COLORS[hr] ?? { bg:"#bfbfbf", text:"#333" };
-            const hrLabel = hr.charAt(0) + hr.slice(1).toLowerCase();
-
-            return (
-              <React.Fragment key={hr}>
-                {/* ── SHR rows ── */}
-                {shrs.map((shr, si) => (
-                  <tr key={`${hr}-${shr}`} style={{background: si%2===0?"#fff":"#f5f5f5"}}>
-                    <td style={{...labelStyle, paddingLeft:14, color:"#333"}}>{shr}</td>
-                    <td style={normsStyle}>-</td>
-                    {activeUnits.map(u => (
-                      <React.Fragment key={u.name}>
-                        {fullFYs.map(fy => (
-                          <td key={fy} style={cellStyle}>
-                            {pctCell(hr, shr, u.plant, u.name, fyMonths[fy])}
-                          </td>
-                        ))}
-                        {curMonths.map(mk => (
-                          <td key={mk.label} style={cellStyle}>
-                            {pctCell(hr, shr, u.plant, u.name, [mk])}
-                          </td>
-                        ))}
-                        <td style={{...cellStyle, background:"#eef3fb"}}>
-                          {pctCell(hr, shr, u.plant, u.name, curMonths)}
-                        </td>
-                      </React.Fragment>
-                    ))}
-                  </tr>
-                ))}
-
-                {/* ── HR total row ── */}
-                <tr style={{background: hrColor.bg}}>
-                  <td style={{...hrLabelStyle, color: hrColor.text}}>{hrLabel}</td>
-                  <td style={{...normsStyle, color: hrColor.text}}>-</td>
-                  {activeUnits.map(u => (
-                    <React.Fragment key={u.name}>
-                      {fullFYs.map(fy => (
-                        <td key={fy} style={{...cellStyle, fontWeight:700, color: hrColor.text}}>
-                          {pctCell(hr, null, u.plant, u.name, fyMonths[fy])}
-                        </td>
-                      ))}
-                      {curMonths.map(mk => (
-                        <td key={mk.label} style={{...cellStyle, fontWeight:700, color: hrColor.text}}>
-                          {pctCell(hr, null, u.plant, u.name, [mk])}
-                        </td>
-                      ))}
-                      <td style={{...cellStyle, fontWeight:700, background: hrColor.bg, color: hrColor.text}}>
-                        {pctCell(hr, null, u.plant, u.name, curMonths)}
-                      </td>
-                    </React.Fragment>
+      <div style={{ overflowX: "auto", marginBottom: 4 }}>
+        <table style={{ borderCollapse: "collapse" }}>
+          <thead>
+            <tr>
+              <th style={{ ...hdr2, background: "#dce6f1", minWidth: 200 }} rowSpan={3}>Head / Sub Head Reason</th>
+              {activeUnits.map(u => (
+                <th key={u.name} style={{ ...hdr2, background: "#dce6f1" }} colSpan={colsPerUnit}>{u.name}</th>
+              ))}
+            </tr>
+            <tr>
+              {activeUnits.map(u => (
+                <Fragment key={u.name}>
+                  {completeFYs.map(fy => (
+                    <th key={fy} style={{ ...hdr2, background: "#bdd7ee", minWidth: 48 }}>{fy}</th>
                   ))}
-                </tr>
-              </React.Fragment>
-            );
-          })}
-        </tbody>
-      </table>
-    );
-  }
+                  {currentMks.map(mk => (
+                    <th key={mk.label} style={{ ...hdr2, background: "#bdd7ee", minWidth: 48 }}>
+                      {new Date(mk.y, mk.m - 1).toLocaleString("en-GB", { month: "short" })}-{String(mk.y).slice(-2)}
+                    </th>
+                  ))}
+                  <th style={{ ...hdr2, background: "#dce6f1", minWidth: 52 }}>{currentFY} UTD Avg</th>
+                </Fragment>
+              ))}
+            </tr>
+            <tr>
+              {activeUnits.map(u => (
+                <Fragment key={u.name}>
+                  {completeFYs.map(fy => (
+                    <th key={fy} style={{ ...hdr2, background: "#dce6f1", fontSize: 10 }}>{fy}</th>
+                  ))}
+                  {currentMks.map(mk => (
+                    <th key={mk.label} style={{ ...hdr2, background: "#bdd7ee", fontSize: 10 }}>
+                      {new Date(mk.y, mk.m - 1).toLocaleString("en-GB", { month: "short" })}-{String(mk.y).slice(-2)}
+                    </th>
+                  ))}
+                  <th style={{ ...hdr2, background: "#c5d9f1", fontSize: 10 }}>UTD Avg</th>
+                </Fragment>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, ri) => (
+              <tr key={ri} style={{ background: (row.style.background as string) ?? "#fff" }}>
+                <td style={{
+                  ...lbl,
+                  background: (row.style.background as string) ?? "#fff",
+                  color: (row.style.color as string) ?? "#111",
+                  fontWeight: row.style.fontWeight ?? "normal",
+                  paddingLeft: row.type === "shr" ? 20 : 8,
+                }}>
+                  {row.rowNo ? <span style={{ color: "#6b7280", marginRight: 5 }}>{row.rowNo}</span> : null}
+                  {row.label}
+                </td>
 
-  function SectionTitle({ label, borderColor }: { label: string; borderColor: string }) {
-    return (
-      <div style={{ fontWeight:700, fontSize:12, margin:"14px 0 4px", color:"#1f3864",
-        borderBottom:`2px solid ${borderColor}`, paddingBottom:2, display:"inline-block" }}>
-        {label}
+                {activeUnits.map(u => {
+                  const getDown = (mks: MonthMeta[]): number => {
+                    if (row.type === "shr") {
+                      return shrDownHrs(row.bucket!, row.shr!, u.plant, mks);
+                    } else if (row.type === "hr") {
+                      return hrDownHrs(row.bucket!, u.plant, mks);
+                    } else {
+                      return (row.buckets ?? []).reduce((s, b) => s + hrDownHrs(b, u.plant, mks), 0);
+                    }
+                  };
+                  return (
+                    <Fragment key={u.name}>
+                      {unitCols(getDown, u.name, u.plant, row.style, `${ri}-${u.name}`, row.isIdle)}
+                    </Fragment>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     );
   }
 
-  const hasFilters = selFloc.length > 0 || selPlant.length > 0 || selSection.length > 0 || selHR.length > 0 || selSHR.length > 0;
+  // ─── Render ───────────────────────────────────────────────────────────────────
 
   return (
-    <div style={{ padding:12, background:"#fff", fontFamily:"Calibri,Arial,sans-serif", fontSize:11 }}>
+    <div style={{ padding: 16, background: "#fff", fontFamily: "'Segoe UI', system-ui, sans-serif", fontSize: 11, minHeight: "100vh" }}>
 
       {/* Header */}
-      <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10 }}>
-        <b style={{ fontSize:13, color:"#1f3864" }}>Downtime Analysis</b>
-        {loaded && <span style={{ color:"#555", fontSize:11 }}>— {fileName}</span>}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, paddingBottom: 10, borderBottom: "2px solid #e5e7eb" }}>
+        <div style={{ fontWeight: 800, fontSize: 15, color: "#1e3a5f", letterSpacing: "-0.02em" }}>
+          Downtime Analysis
+        </div>
+        {loaded && <span style={{ color: "#6b7280", fontSize: 11, fontStyle: "italic" }}>— {fileName}</span>}
         {loaded && (
-          <button onClick={reset} style={{ marginLeft:"auto", fontSize:11, padding:"2px 10px", cursor:"pointer" }}>✕ Reset</button>
+          <button onClick={reset} style={{ marginLeft: "auto", fontSize: 11, padding: "3px 12px", cursor: "pointer", background: "#fff", border: "1px solid #e5e7eb", borderRadius: 4, color: "#6b7280", fontWeight: 500 }}>
+            ✕ Reset
+          </button>
         )}
       </div>
 
-      {/* Upload */}
+      {/* Upload Zone */}
       {!loaded && (
         <div
-          onDragOver={e=>{e.preventDefault();setDrag(true)}}
-          onDragLeave={()=>setDrag(false)}
+          onDragOver={e => { e.preventDefault(); setDrag(true); }}
+          onDragLeave={() => setDrag(false)}
           onDrop={onDrop}
-          onClick={()=>fileRef.current?.click()}
-          style={{ border:`2px dashed ${drag?"#4472c4":"#bbb"}`, background:drag?"#eef3fb":"#fafafa",
-            padding:"48px 0", textAlign:"center", cursor:"pointer", borderRadius:3, marginBottom:12 }}
+          onClick={() => fileRef.current?.click()}
+          style={{
+            border: `2px dashed ${drag ? "#3b82f6" : "#d1d5db"}`,
+            background: drag ? "#eff6ff" : "#f9fafb",
+            borderRadius: 8, padding: "60px 0", textAlign: "center",
+            cursor: "pointer", transition: "all 0.15s",
+          }}
         >
-          <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" style={{display:"none"}}
-            onChange={e=>{ const f=e.target.files?.[0]; if(f) load(f); }} />
-          <div style={{fontSize:28,marginBottom:6}}>📊</div>
-          <b style={{fontSize:12}}>Drop Excel file here or click to browse</b>
-          <div style={{color:"#888",fontSize:11,marginTop:4}}>.xlsx · .xls · .csv</div>
+          <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: "none" }}
+            onChange={e => { const f = e.target.files?.[0]; if (f) load(f); }} />
+          <div style={{ fontSize: 36, marginBottom: 8 }}>📊</div>
+          <div style={{ fontWeight: 700, fontSize: 13, color: "#374151", marginBottom: 4 }}>
+            Drop your Excel file here or click to browse
+          </div>
+          <div style={{ color: "#9ca3af", fontSize: 11 }}>.xlsx · .xls · .csv</div>
         </div>
       )}
 
+      {/* Main Content */}
       {loaded && (
         <>
-          {/* ── Filter Bar ── */}
+          {/* Filter Bar */}
           <div style={{
-            background:"#f4f7fc", border:"1px solid #c8d8ee", borderRadius:3,
-            padding:"8px 10px", marginBottom:12,
-            display:"flex", flexWrap:"wrap", gap:12, alignItems:"flex-end",
+            background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 6,
+            padding: "10px 12px", marginBottom: 14,
+            display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-end",
           }}>
             <MultiSelect label="Functional Location" options={allFlocs}    selected={selFloc}    onChange={handleFlocChange} />
             <MultiSelect label="Plant"                options={allPlants}   selected={selPlant}   onChange={handlePlantChange}   disabled={allPlants.length === 0} />
@@ -932,49 +1026,53 @@ export default function IdleAnalysis() {
             <MultiSelect label="Head Reason"          options={allHRs}      selected={selHR}      onChange={handleHRChange}      disabled={allHRs.length === 0} />
             <MultiSelect label="Sub Head Reason"      options={allSHRs}     selected={selSHR}     onChange={v => setSelSHR(v)}   disabled={allSHRs.length === 0} />
             {hasFilters && (
-              <button onClick={clearAll} style={{
-                fontSize:11, padding:"3px 10px", cursor:"pointer",
-                background:"#fff", border:"1px solid #aaa", borderRadius:2,
-                color:"#c00", fontWeight:600, alignSelf:"flex-end",
-              }}>✕ Clear All</button>
+              <button onClick={clearAll} style={{ fontSize: 11, padding: "5px 12px", cursor: "pointer", background: "#fff", border: "1px solid #fca5a5", borderRadius: 4, color: "#dc2626", fontWeight: 600, alignSelf: "flex-end" }}>
+                ✕ Clear All
+              </button>
             )}
           </div>
 
-          <div style={{ overflowX:"auto" }}>
+          <div style={{ overflowX: "auto" }}>
 
-            {/* ══ MACHINE COUNT ══ */}
-            <SectionTitle label="Machine Count" borderColor="#4472c4" />
+            {/* 1. Machine Count */}
+            <SectionTitle label="Machine Count" color="#3b82f6" />
             {renderMachineCountTable()}
 
-            {/* ══ SUB HEAD REASON SUMMARY ══ */}
-            <SectionTitle label="Sub Head Reason Summary" borderColor="#4472c4" />
-            {renderSHRTable()}
+            {/* 2. Total Hrs */}
+            <SectionTitle label="Total Hrs." color="#3b82f6" />
+            {renderTotalHrsTable()}
 
-            {/* ══ TOTAL HRS ══ */}
-            <SectionTitle label="Total Hrs." borderColor="#4472c4" />
-            {renderTotalHrsTable(activePks)}
+            {/* 3. Idle Hrs */}
+            <SectionTitle label="Idle Hrs." color="#f97316" />
+            {renderIdleHrsTable()}
 
-            {/* ══ PER HEAD REASON BLOCKS ══ */}
-            {activeHRs.map(hr => {
-              const hrName = hr.charAt(0) + hr.slice(1).toLowerCase();
-              const c = HR_COLORS[hr] ?? {
-                bg:"#ededed", sub:"#bfbfbf", label:`${hrName} Hrs.`,
-                remBg:"#f5f5f5", remSub:"#d6d6d6", remLabel:`Remaining Hrs. (after ${hrName})`,
-                pctBg:"#f0f0f0", pctSub:"#cccccc", pctLabel:`% ${hrName} Hrs. / Total Hrs.`,
-              };
+            {/* 4. Remaining Hrs (after Idle) */}
+            <SectionTitle label="Remaining Hrs. (after Idle)" color="#f97316" />
+            {renderRemainingHrsTable()}
+
+            {/* 5. % Idle Hrs / Total Hrs */}
+            <SectionTitle label="% Idle Hrs. / Total Hrs." color="#f97316" />
+            {renderPctIdleTable()}
+
+            {/* 6–11. Per HR blocks */}
+            {HR_ORDER.map(hrKey => {
+              const cfg     = HR_CONFIG[hrKey];
+              const hasData = Object.keys(hrMaps[hrKey] ?? {}).length > 0;
+              if (!hasData) return null;
               return (
-                <div key={hr}>
-                  <SectionTitle label={c.label} borderColor={c.sub} />
-                  {renderConsolidatedHRTable(hr, activePks, c.bg, c.sub)}
+                <div key={hrKey}>
+                  <SectionTitle label={`${cfg.label} Hrs.`} color={cfg.sub} />
+                  {renderHrHrsTable(hrKey, cfg.bg, cfg.sub)}
 
-                  <SectionTitle label={c.remLabel} borderColor={c.remSub} />
-                  {renderRemainingTables(hr, activePks, c.remBg, c.remSub)}
-
-                  <SectionTitle label={c.pctLabel} borderColor={c.pctSub} />
-                  {renderPercentageTables(hr, activePks, c.pctBg, c.pctSub)}
+                  <SectionTitle label={`% ${cfg.label} Hrs. / Idle Remaining Hrs.`} color={cfg.pctSub} />
+                  {renderPctOfIdleRemainingTable(hrKey, cfg.pctBg, cfg.pctSub)}
                 </div>
               );
             })}
+
+            {/* 12. Consolidated HR Summary */}
+            <SectionTitle label="Consolidated HR Summary" color="#1e3a5f" />
+            {renderConsolidatedTable()}
 
           </div>
         </>
