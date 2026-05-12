@@ -186,8 +186,8 @@ function parseExcel(file: File): Promise<ParsedRow[]> {
             r._d = v;
           else if (n === "plant")
             r._plant = Number(v) || 0;
-          else if (["functional location","functional loc","funcloc","func location"].includes(n))
-            r._sec = String(v).trim();           // floc unused beyond parsing
+          // else if (["functional location","functional loc","funcloc","func location", "Functional Location"].includes(n))
+          //   if (!r._sec) r._sec = String(v).trim();
           else if (n === "section")
             r._sec = String(v).toUpperCase().replace(/\s+/g, " ").trim();
           else if (n === "head reason" || n === "headreason")
@@ -199,9 +199,11 @@ function parseExcel(file: File): Promise<ParsedRow[]> {
           else if (n.includes("total down") || n === "totaldowntime")
             r._down = Number(v) || 0;
         });
+        // console.log("r._plant && r._sec ==>", r._plant ,  r._sec, r._plant && r._sec, r)
 
         if (r._plant && r._sec) rows.push(r);
       });
+      console.log("rows ==>", rows)
 
       resolve(rows);
     };
