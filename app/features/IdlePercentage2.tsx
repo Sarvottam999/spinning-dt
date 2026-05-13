@@ -994,7 +994,7 @@ function CrossUnitTable({
         color: "#f1f5f9", borderBottom: "0.5px solid #334155",
         borderRight: "0.5px solid #334155", whiteSpace: "nowrap",
       }}>
-        ▣ Total Downtime
+      Total Downtime
       </td>
       {activeUnits.flatMap((unit) => {
         const cells: ReactNode[] = [];
@@ -1330,7 +1330,7 @@ function HoursTable({
         color: "#f1f5f9", borderBottom: "0.5px solid #334155",
         borderRight: "0.5px solid #334155", whiteSpace: "nowrap",
       }}>
-        ▣ Total Downtime
+        Total Downtime
       </td>
       {activeUnits.flatMap((unit) => {
         const cells: ReactNode[] = [];
@@ -1679,7 +1679,7 @@ export default function DowntimeConsolidated(): ReactNode {
 
         {data && (
           <>
-            <button
+            {/* <button
               onClick={onCopy}
               style={{
                 marginLeft: 8, fontSize: 11, padding: "4px 14px",
@@ -1690,7 +1690,7 @@ export default function DowntimeConsolidated(): ReactNode {
               }}
             >
               {copyMsg || "📋 Copy Table"}
-            </button>
+            </button> */}
             <button
               onClick={onReset}
               style={{
@@ -1783,6 +1783,21 @@ export default function DowntimeConsolidated(): ReactNode {
           </div>
         )}
 
+{data && (
+      <div style={{ padding: "12px 20px", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+            <button
+              onClick={onCopy}
+              style={{
+                marginLeft: "auto", fontSize: 11, padding: "4px 12px",
+                background: copyMsg ? "#059669" : "#1e293b",
+                border: "none", borderRadius: 4,
+                color: "#f1f5f9", cursor: "pointer", transition: "background 0.2s",
+              }}
+            >
+              {copyMsg || "📋 Copy Table"}
+            </button>
+            </div>
+)}
         {/* ── Detail tables below ──────────────────────────────────────────── */}
         <div id="tableArea">
           <div id="crossUnitArea">
