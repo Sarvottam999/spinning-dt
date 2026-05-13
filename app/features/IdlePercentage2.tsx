@@ -314,11 +314,7 @@ function fyGroups(months: MonthMeta[]): string[] {
   return [...seen].sort();
 }
 
-function monthsForFy(months: MonthMeta[], fy: string): MonthMeta[] {
-  return months.filter((m) => fyLabel(m) === fy);
-}
-
-// ─── Cross-Unit Table ─────────────────────────────────────────────────────────
+// ─── Cross-Unit Table (with expandable drill-down) ────────────────────────────
 
 interface CrossUnitTableProps {
   sk:          SectionKey;
@@ -328,55 +324,71 @@ interface CrossUnitTableProps {
   idleMap:     HrMap;
   hrMap:       Record<string, HrMap>;
   shrMap:      ShrMap;
+  reasonMap:   ReasonMap;
 }
 
 function CrossUnitTable({
-  sk, activeUnits, activePks, months, idleMap, hrMap, shrMap,
+  sk, activeUnits, activePks, months, idleMap, hrMap, shrMap, reasonMap,
 }: CrossUnitTableProps): ReactNode {
+  // Default: all HR and SHR rows expanded
+  const initHR = new Set<string>(HR_ORDER);
+  const initSHR = (): Set<string> => {
+    const s = new Set<string>();
+    HR_ORDER.forEach((hr) => {
+      Object.keys(shrMap[hr] ?? {}).forEach((shr) => s.add(`${hr}|${shr}`));
+    });
+    return s;
+  };
+
+  const [expandedHR,  setExpandedHR]  = useState<Set<string>>(initHR);
+  const [expandedSHR, setExpandedSHR] = useState<Set<string>>(initSHR);
+
   if (!activePks.includes(sk)) return null;
 
-  const fys         = fyGroups(months);
-  const lastFy      = fys[fys.length - 1];
-  const monthlyCols = months; // all months as individual columns
+  const toggleHR = (hr: string): void =>
+    setExpandedHR((prev) => { const n = new Set(prev); n.has(hr) ? n.delete(hr) : n.add(hr); return n; });
+
+  const toggleSHR = (hr: string, shr: string): void => {
+    const key = `${hr}|${shr}`;
+    setExpandedSHR((prev) => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
+  };
+
+  const fys    = fyGroups(months);
+  const lastFy = fys[fys.length - 1];
+  const monthlyCols = months;
+  const colsPerUnit = monthlyCols.length + 1;
 
   const getMonthDown = (
     unit: Unit,
     hr: HeadReason,
     shr: string | null,
+    rd: string | null,
     ml: string,
   ): number => {
-    if (shr === null) {
-      return hr === "IDLE"
-        ? (idleMap[unit.plant]?.[sk]?.[ml] as number | undefined) ?? 0
-        : (hrMap[hr]?.[unit.plant]?.[sk]?.[ml] as number | undefined) ?? 0;
+    if (rd !== null && shr !== null) {
+      return (reasonMap[hr]?.[shr]?.[rd]?.[unit.plant]?.[sk]?.[ml] as number | undefined) ?? 0;
     }
-    return (shrMap[hr]?.[shr]?.[unit.plant]?.[sk]?.[ml] as number | undefined) ?? 0;
+    if (shr !== null) {
+      return (shrMap[hr]?.[shr]?.[unit.plant]?.[sk]?.[ml] as number | undefined) ?? 0;
+    }
+    return hr === "IDLE"
+      ? (idleMap[unit.plant]?.[sk]?.[ml] as number | undefined) ?? 0
+      : (hrMap[hr]?.[unit.plant]?.[sk]?.[ml] as number | undefined) ?? 0;
   };
 
-  const getDown = (
-    unit: Unit,
-    hr: HeadReason,
-    shr: string | null,
-    forMonths: MonthMeta[],
-  ): number => {
-    let sum = 0;
-    forMonths.forEach((mk) => { sum += getMonthDown(unit, hr, shr, mk.label); });
-    return sum;
-  };
-
-  // Matches calcPct: only months with non-zero down contribute to denominator
   const toPct = (
     unit: Unit,
     forMonths: MonthMeta[],
     hr: HeadReason,
     shr: string | null,
+    rd: string | null = null,
   ): number | null => {
     const mc = MC[unit.name]?.[sk] ?? 0;
     if (mc === 0) return null;
     let num = 0;
     let den = 0;
     forMonths.forEach((mk) => {
-      const down = getMonthDown(unit, hr, shr, mk.label);
+      const down = getMonthDown(unit, hr, shr, rd, mk.label);
       if (down === 0) return;
       const total = mc * mk.days * 24;
       const idle  = (idleMap[unit.plant]?.[sk]?.[mk.label] as number | undefined) ?? 0;
@@ -406,8 +418,6 @@ function CrossUnitTable({
     fontWeight: v !== null && v > 0 ? 500 : 400,
   });
 
-  const colsPerUnit = monthlyCols.length + 1; // monthly cols + 1 FY UTD Avg col
-
   const shrsByHr: Record<HeadReason, string[]> = {
     IDLE:      Object.keys(shrMap["IDLE"]      ?? {}).sort(),
     PLANNED:   Object.keys(shrMap["PLANNED"]   ?? {}).sort(),
@@ -415,43 +425,49 @@ function CrossUnitTable({
     OTHERS:    Object.keys(shrMap["OTHERS"]    ?? {}).sort(),
   };
 
+  // Render monthly + UTD cells for a given unit/hr/shr/rd combo
   const renderUnitCells = (
     unit: Unit,
     hr: HeadReason,
     shr: string | null,
+    rd: string | null,
     rowBg?: string,
   ): ReactNode[] => {
     const cells: ReactNode[] = [];
-
     monthlyCols.forEach((mk) => {
-      const v = toPct(unit, [mk], hr, shr);
+      const v = toPct(unit, [mk], hr, shr, rd);
       cells.push(<td key={`${unit.name}-m-${mk.label}`} style={valStyle(v, rowBg)}>{fmtV(v)}</td>);
     });
-
-    const vAll = toPct(unit, months, hr, shr);
+    const vAll = toPct(unit, months, hr, shr, rd);
     cells.push(
       <td key={`${unit.name}-utd`} style={{ ...valStyle(vAll, rowBg), fontWeight: 600, borderRight: "2px solid #cbd5e1" }}>
         {fmtV(vAll)}
       </td>,
     );
-
     return cells;
   };
 
   const rows: ReactNode[] = [];
 
   HR_ORDER.forEach((hr) => {
-    const shrs  = shrsByHr[hr];
-    const style = HR_STYLE[hr];
+    const shrs    = shrsByHr[hr];
+    const style   = HR_STYLE[hr];
+    const hrOpen  = expandedHR.has(hr);
     if (shrs.length === 0) return;
 
+    // ── HR header row (clickable) ──────────────────────────────────────────
     rows.push(
-      <tr key={`hr-hdr-${hr}`}>
+      <tr
+        key={`hr-hdr-${hr}`}
+        style={{ cursor: "pointer" }}
+        onClick={() => toggleHR(hr)}
+      >
         <td style={{
           padding: "6px 10px", fontSize: 11, fontWeight: 700,
           background: style.headerBg, color: style.headerText,
           borderBottom: "0.5px solid #e2e8f0", borderRight: "0.5px solid #e2e8f0",
           letterSpacing: "0.06em",
+          userSelect: "none",
         }}>
           {hr}
         </td>
@@ -465,13 +481,25 @@ function CrossUnitTable({
       </tr>,
     );
 
+    if (!hrOpen) return;
+
     shrs.forEach((shr) => {
+      const shrKey  = `${hr}|${shr}`;
+      const shrOpen = expandedSHR.has(shrKey);
+      const rds     = Object.keys(reasonMap[hr]?.[shr] ?? {}).sort();
+
+      // ── SHR row (clickable if has reason descriptions) ─────────────────
       rows.push(
-        <tr key={`shr-${hr}-${shr}`} style={{ background: style.subBg }}>
+        <tr
+          key={`shr-${hr}-${shr}`}
+          style={{ background: style.subBg, cursor: rds.length > 0 ? "pointer" : "default" }}
+          onClick={() => rds.length > 0 && toggleSHR(hr, shr)}
+        >
           <td style={{
             padding: "5px 10px 5px 22px", fontSize: 11, fontWeight: 400,
             color: "#374151", borderBottom: "0.5px solid #e2e8f0",
             borderRight: "0.5px solid #e2e8f0", whiteSpace: "nowrap",
+            userSelect: "none",
           }}>
             <span style={{
               width: 5, height: 5, borderRadius: "50%", background: "#94a3b8",
@@ -479,11 +507,34 @@ function CrossUnitTable({
             }} />
             {shr}
           </td>
-          {activeUnits.flatMap((u) => renderUnitCells(u, hr, shr, style.subBg))}
+          {activeUnits.flatMap((u) => renderUnitCells(u, hr, shr, null, style.subBg))}
         </tr>,
       );
+
+      // ── Reason Description rows (shown when SHR expanded) ──────────────
+      if (shrOpen && rds.length > 0) {
+        rds.forEach((rd) => {
+          rows.push(
+            <tr key={`rd-${hr}-${shr}-${rd}`} style={{ background: "#fff" }}>
+              <td style={{
+                padding: "5px 10px 5px 38px", fontSize: 11, color: "#64748b",
+                borderBottom: "0.5px solid #f1f5f9", borderRight: "0.5px solid #e2e8f0",
+                whiteSpace: "nowrap",
+              }}>
+                <span style={{
+                  width: 5, height: 5, borderRadius: "50%", background: "#cbd5e1",
+                  display: "inline-block", marginRight: 6, verticalAlign: "middle",
+                }} />
+                {rd}
+              </td>
+              {activeUnits.flatMap((u) => renderUnitCells(u, hr, shr, rd, "#fff"))}
+            </tr>,
+          );
+        });
+      }
     });
 
+    // ── HR total row ────────────────────────────────────────────────────────
     rows.push(
       <tr key={`hr-total-${hr}`} style={{ background: style.totalBg }}>
         <td style={{
@@ -493,11 +544,12 @@ function CrossUnitTable({
         }}>
           {hr.charAt(0) + hr.slice(1).toLowerCase()} Total
         </td>
-        {activeUnits.flatMap((u) => renderUnitCells(u, hr, null, style.totalBg))}
+        {activeUnits.flatMap((u) => renderUnitCells(u, hr, null, null, style.totalBg))}
       </tr>,
     );
   });
 
+  // ── Grand Total row ─────────────────────────────────────────────────────────
   rows.push(
     <tr key="total-downtime" style={{ background: "#1e293b" }}>
       <td style={{
@@ -510,14 +562,13 @@ function CrossUnitTable({
       {activeUnits.flatMap((unit) => {
         const cells: ReactNode[] = [];
 
-        // Total = sum of all HR percentages using same calcPct-compatible logic
         const toPctTotal = (forMonths: MonthMeta[]): number | null => {
           const mc = MC[unit.name]?.[sk] ?? 0;
           if (mc === 0) return null;
           let num = 0;
           let den = 0;
           forMonths.forEach((mk) => {
-            const down = HR_ORDER.reduce((s, hr) => s + getMonthDown(unit, hr, null, mk.label), 0);
+            const down = HR_ORDER.reduce((s, hr) => s + getMonthDown(unit, hr, null, null, mk.label), 0);
             if (down === 0) return;
             const total = mc * mk.days * 24;
             const idle  = (idleMap[unit.plant]?.[sk]?.[mk.label] as number | undefined) ?? 0;
@@ -563,7 +614,7 @@ function CrossUnitTable({
         padding: "8px 10px", fontSize: 11, fontWeight: 700,
         color: "#94a3b8", background: "#0f172a", textAlign: "left",
         borderBottom: "1px solid #334155", borderRight: "0.5px solid #334155",
-        minWidth: 180, position: "sticky", left: 0, zIndex: 2,
+        minWidth: 220, position: "sticky", left: 0, zIndex: 2,
       }}>
         Head Reason / Sub Head Reason
       </th>
@@ -614,6 +665,9 @@ function CrossUnitTable({
           Cross-Unit View
         </span>
         <span style={{ fontSize: 14, fontWeight: 600, color: "#f1f5f9" }}>{PL[sk]}</span>
+        <span style={{ fontSize: 10, color: "#475569", marginLeft: "auto" }}>
+          Click a row to expand / collapse
+        </span>
       </div>
 
       <div style={{ overflowX: "auto" }}>
@@ -800,8 +854,6 @@ function SectionTable({
   );
 }
 
-// ─── View Toggle ──────────────────────────────────────────────────────────────
-
 // ─── Main App ─────────────────────────────────────────────────────────────────
 
 export default function DowntimeConsolidated(): ReactNode {
@@ -841,9 +893,6 @@ export default function DowntimeConsolidated(): ReactNode {
       const allRows = tbl.querySelectorAll("tr");
       allRows.forEach((row) => {
         const cells = row.querySelectorAll("th, td");
-        // The sub-header row (FY / month labels) sits inside <thead> at index 1.
-        // Because the first header row has rowSpan=2, this row has no first cell
-        // in the DOM, so we prepend a blank tab to push values to column 2.
         const isSubHeader =
           row.closest("thead") !== null &&
           row.rowIndex === 1 &&
@@ -940,17 +989,18 @@ export default function DowntimeConsolidated(): ReactNode {
         {/* Cross-Unit tables first, then Original Section tables */}
         <div id="tableArea">
           <div id="crossUnitArea">
-          {data && data.activePks.map((sk) => (
-            <CrossUnitTable
-              key={`cu-${sk}`} sk={sk}
-              activeUnits={data.activeUnits}
-              activePks={data.activePks}
-              months={data.months}
-              idleMap={data.idleMap}
-              hrMap={data.hrMap}
-              shrMap={data.shrMap}
-            />
-          ))}
+            {data && data.activePks.map((sk) => (
+              <CrossUnitTable
+                key={`cu-${sk}`} sk={sk}
+                activeUnits={data.activeUnits}
+                activePks={data.activePks}
+                months={data.months}
+                idleMap={data.idleMap}
+                hrMap={data.hrMap}
+                shrMap={data.shrMap}
+                reasonMap={data.reasonMap}
+              />
+            ))}
           </div>
           {data && data.activePks.map((sk) => (
             <SectionTable
