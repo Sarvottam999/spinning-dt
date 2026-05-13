@@ -527,39 +527,67 @@ function SummaryTableWrapper({ title, badge, badgeBg, tableId, children }: Summa
 interface MachineCountTableProps {
   activePks:   SectionKey[];
   activeUnits: Unit[];
-  months:      MonthMeta[];
 }
 
-function MachineCountTable({ activePks, activeUnits, months }: MachineCountTableProps): ReactNode {
-  if (!activePks.length || !months.length) return null;
-  const activeSecs = getActiveSections(activePks);
+function MachineCountTable({ activePks, activeUnits }: Omit<MachineCountTableProps, 'months'>): ReactNode {
+  if (!activePks.length) return null;
+  const activeSecs = getActiveSections(ALL_KEYS);
+
+  const thBase = (extra?: CSSProperties): CSSProperties => ({
+    padding: "5px 8px", fontSize: 11, textAlign: "center", fontWeight: 600,
+    borderBottom: "0.5px solid #cbd5e1", borderRight: "0.5px solid #cbd5e1",
+    whiteSpace: "nowrap", background: "#dbeafe", color: "#1e293b",
+    ...extra,
+  });
 
   return (
-    <SummaryTableWrapper
-      title="Machine Count"
-      badge="MC"
-      badgeBg="#3b82f6"
-      tableId="mcTable"
-    >
+    <SummaryTableWrapper title="Machine Count" badge="MC" badgeBg="#3b82f6" tableId="mcTable">
       <table style={{ borderCollapse: "collapse" }}>
-        <TableHead4Row months={months} activeSections={activeSecs} bgColor="#dbeafe" subColor="#bfdbfe" />
+        <thead>
+          <tr>
+            <th style={thBase({ textAlign: "left", fontWeight: 700, minWidth: 80 })}>Unit Name</th>
+            <th style={thBase({ minWidth: 60, borderRight: "1px solid #94a3b8", color: "#6b7280" })}>Plant</th>
+            {activeSecs.map((sec, si) => (
+              <th key={sec.label} colSpan={sec.activeKeys.length} style={thBase({
+                background: "#bfdbfe",
+                borderRight: si < activeSecs.length - 1 ? "1px solid #94a3b8" : "0.5px solid #cbd5e1",
+              })}>
+                {sec.label}
+              </th>
+            ))}
+          </tr>
+          <tr>
+            <th style={thBase({ textAlign: "left" })}>—</th>
+            <th style={thBase({ borderRight: "1px solid #94a3b8", color: "#6b7280" })}>—</th>
+            {activeSecs.flatMap((sec, si) =>
+              sec.activeKeys.map((k, ki) => (
+                <th key={k} style={thBase({
+                  background: "#bfdbfe", fontWeight: 500, fontSize: 10,
+                  borderBottom: "1px solid #94a3b8",
+                  borderRight: si === activeSecs.length - 1 && ki === sec.activeKeys.length - 1
+                    ? "0.5px solid #cbd5e1" : "0.5px solid #cbd5e1",
+                })}>
+                  {PL[k]}
+                </th>
+              ))
+            )}
+          </tr>
+        </thead>
         <tbody>
-          {activeUnits.map((u, i) => (
-            <tr key={u.name} style={{ background: i % 2 === 1 ? "#f8fafc" : "#fff" }}>
-              <td style={{ ...baseCell, textAlign: "left", fontWeight: 600 }}>{u.name}</td>
-              <td style={{ ...numCell, textAlign: "center", color: "#6b7280" }}>{u.plant}</td>
-              {months.map(mk =>
-                activeSecs.flatMap(s => s.activeKeys.map(k => {
-                  const v = MC[u.name]?.[k] ?? 0;
-                  return (
-                    <td key={`${mk.label}-${k}`} style={{ ...numCell, color: v === 0 ? "#d1d5db" : "#111" }}>
-                      {v === 0 ? "-" : v}
-                    </td>
-                  );
-                }))
-              )}
-            </tr>
-          ))}
+         {UNITS.map((u, i) => (
+  <tr key={u.name} style={{ background: i % 2 === 1 ? "#f8fafc" : "#fff" }}>
+    <td style={{ ...baseCell, textAlign: "left", fontWeight: 600 }}>{u.name}</td>
+    <td style={{ ...numCell, textAlign: "center", color: "#6b7280" }}>{u.plant}</td>
+    {activeSecs.flatMap(s => s.activeKeys.map(k => {
+      const v = MC[u.name]?.[k] ?? 0;
+      return (
+        <td key={k} style={{ ...numCell, color: v === 0 ? "#d1d5db" : "#111" }}>
+          {v === 0 ? "-" : v}
+        </td>
+      );
+    }))}
+  </tr>
+))}
         </tbody>
       </table>
     </SummaryTableWrapper>
@@ -1751,7 +1779,6 @@ export default function DowntimeConsolidated(): ReactNode {
             <MachineCountTable
               activePks={data.activePks}
               activeUnits={data.activeUnits}
-              months={data.months}
             />
 
             <TotalHrsTable
