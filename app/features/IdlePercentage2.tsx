@@ -683,6 +683,324 @@ function CrossUnitTable({
   );
 }
 
+// ─── Hours Table (raw downtime hours, same drill-down as CrossUnitTable) ──────
+
+interface HoursTableProps {
+  sk:          SectionKey;
+  activeUnits: Unit[];
+  activePks:   SectionKey[];
+  months:      MonthMeta[];
+  idleMap:     HrMap;
+  hrMap:       Record<string, HrMap>;
+  shrMap:      ShrMap;
+  reasonMap:   ReasonMap;
+}
+
+function HoursTable({
+  sk, activeUnits, activePks, months, idleMap, hrMap, shrMap, reasonMap,
+}: HoursTableProps): ReactNode {
+  const initHR = new Set<string>(HR_ORDER);
+  const initSHR = (): Set<string> => {
+    const s = new Set<string>();
+    HR_ORDER.forEach((hr) => {
+      Object.keys(shrMap[hr] ?? {}).forEach((shr) => s.add(`${hr}|${shr}`));
+    });
+    return s;
+  };
+
+  const [expandedHR,  setExpandedHR]  = useState<Set<string>>(initHR);
+  const [expandedSHR, setExpandedSHR] = useState<Set<string>>(initSHR);
+
+  if (!activePks.includes(sk)) return null;
+
+  const toggleHR = (hr: string): void =>
+    setExpandedHR((prev) => { const n = new Set(prev); n.has(hr) ? n.delete(hr) : n.add(hr); return n; });
+
+  const toggleSHR = (hr: string, shr: string): void => {
+    const key = `${hr}|${shr}`;
+    setExpandedSHR((prev) => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
+  };
+
+  const fys         = fyGroups(months);
+  const lastFy      = fys[fys.length - 1];
+  const monthlyCols = months;
+  const colsPerUnit = monthlyCols.length + 1;
+
+  // Raw hours lookup — same shape as CrossUnitTable getMonthDown
+  const getHours = (
+    unit: Unit,
+    hr: HeadReason,
+    shr: string | null,
+    rd: string | null,
+    ml: string,
+  ): number => {
+    if (rd !== null && shr !== null)
+      return (reasonMap[hr]?.[shr]?.[rd]?.[unit.plant]?.[sk]?.[ml] as number | undefined) ?? 0;
+    if (shr !== null)
+      return (shrMap[hr]?.[shr]?.[unit.plant]?.[sk]?.[ml] as number | undefined) ?? 0;
+    return hr === "IDLE"
+      ? (idleMap[unit.plant]?.[sk]?.[ml] as number | undefined) ?? 0
+      : (hrMap[hr]?.[unit.plant]?.[sk]?.[ml] as number | undefined) ?? 0;
+  };
+
+  const sumHours = (
+    unit: Unit,
+    hr: HeadReason,
+    shr: string | null,
+    rd: string | null,
+    forMonths: MonthMeta[],
+  ): number => forMonths.reduce((acc, mk) => acc + getHours(unit, hr, shr, rd, mk.label), 0);
+
+  const fmtH = (v: number): string => v === 0 ? "-" : v.toFixed(2);
+
+  const baseCell: CSSProperties = {
+    padding: "5px 8px", fontSize: 11, textAlign: "right",
+    borderBottom: "0.5px solid #e2e8f0", borderRight: "0.5px solid #e2e8f0",
+    whiteSpace: "nowrap", minWidth: 52,
+  };
+
+  const valStyle = (v: number, bg?: string): CSSProperties => ({
+    ...baseCell,
+    background: bg ?? "transparent",
+    color: v === 0 ? "#cbd5e1" : "#1e293b",
+    fontWeight: v > 0 ? 500 : 400,
+  });
+
+  const shrsByHr: Record<HeadReason, string[]> = {
+    IDLE:      Object.keys(shrMap["IDLE"]      ?? {}).sort(),
+    PLANNED:   Object.keys(shrMap["PLANNED"]   ?? {}).sort(),
+    UNPLANNED: Object.keys(shrMap["UNPLANNED"] ?? {}).sort(),
+    OTHERS:    Object.keys(shrMap["OTHERS"]    ?? {}).sort(),
+  };
+
+  const renderUnitCells = (
+    unit: Unit,
+    hr: HeadReason,
+    shr: string | null,
+    rd: string | null,
+    rowBg?: string,
+  ): ReactNode[] => {
+    const cells: ReactNode[] = [];
+    monthlyCols.forEach((mk) => {
+      const v = getHours(unit, hr, shr, rd, mk.label);
+      cells.push(<td key={`${unit.name}-m-${mk.label}`} style={valStyle(v, rowBg)}>{fmtH(v)}</td>);
+    });
+    // UTD = sum across all months
+    const vAll = sumHours(unit, hr, shr, rd, months);
+    cells.push(
+      <td key={`${unit.name}-utd`} style={{
+        ...valStyle(vAll, rowBg),
+        fontWeight: 700, borderRight: "2px solid #cbd5e1",
+      }}>
+        {fmtH(vAll)}
+      </td>,
+    );
+    return cells;
+  };
+
+  const rows: ReactNode[] = [];
+
+  HR_ORDER.forEach((hr) => {
+    const shrs   = shrsByHr[hr];
+    const style  = HR_STYLE[hr];
+    const hrOpen = expandedHR.has(hr);
+    if (shrs.length === 0) return;
+
+    rows.push(
+      <tr key={`hr-hdr-${hr}`} style={{ cursor: "pointer" }} onClick={() => toggleHR(hr)}>
+        <td style={{
+          padding: "6px 10px", fontSize: 11, fontWeight: 700,
+          background: style.headerBg, color: style.headerText,
+          borderBottom: "0.5px solid #e2e8f0", borderRight: "0.5px solid #e2e8f0",
+          letterSpacing: "0.06em", userSelect: "none",
+        }}>
+          {hr}
+        </td>
+        {activeUnits.map((u) => (
+          <td key={u.name} colSpan={colsPerUnit} style={{
+            background: style.headerBg, borderBottom: "0.5px solid #e2e8f0",
+            borderRight: "2px solid #cbd5e1",
+          }} />
+        ))}
+      </tr>,
+    );
+
+    if (!hrOpen) return;
+
+    shrs.forEach((shr) => {
+      const shrKey  = `${hr}|${shr}`;
+      const shrOpen = expandedSHR.has(shrKey);
+      const rds     = Object.keys(reasonMap[hr]?.[shr] ?? {}).sort();
+
+      rows.push(
+        <tr
+          key={`shr-${hr}-${shr}`}
+          style={{ background: style.subBg, cursor: rds.length > 0 ? "pointer" : "default" }}
+          onClick={() => rds.length > 0 && toggleSHR(hr, shr)}
+        >
+          <td style={{
+            padding: "5px 10px 5px 22px", fontSize: 11, fontWeight: 400,
+            color: "#374151", borderBottom: "0.5px solid #e2e8f0",
+            borderRight: "0.5px solid #e2e8f0", whiteSpace: "nowrap", userSelect: "none",
+          }}>
+            <span style={{
+              width: 5, height: 5, borderRadius: "50%", background: "#94a3b8",
+              display: "inline-block", marginRight: 7, verticalAlign: "middle",
+            }} />
+            {shr}
+          </td>
+          {activeUnits.flatMap((u) => renderUnitCells(u, hr, shr, null, style.subBg))}
+        </tr>,
+      );
+
+      if (shrOpen && rds.length > 0) {
+        rds.forEach((rd) => {
+          rows.push(
+            <tr key={`rd-${hr}-${shr}-${rd}`} style={{ background: "#fff" }}>
+              <td style={{
+                padding: "5px 10px 5px 38px", fontSize: 11, color: "#64748b",
+                borderBottom: "0.5px solid #f1f5f9", borderRight: "0.5px solid #e2e8f0",
+                whiteSpace: "nowrap",
+              }}>
+                <span style={{
+                  width: 5, height: 5, borderRadius: "50%", background: "#cbd5e1",
+                  display: "inline-block", marginRight: 6, verticalAlign: "middle",
+                }} />
+                {rd}
+              </td>
+              {activeUnits.flatMap((u) => renderUnitCells(u, hr, shr, rd, "#fff"))}
+            </tr>,
+          );
+        });
+      }
+    });
+
+    rows.push(
+      <tr key={`hr-total-${hr}`} style={{ background: style.totalBg }}>
+        <td style={{
+          padding: "6px 10px", fontSize: 11, fontWeight: 700,
+          color: style.totalText, borderBottom: "1px solid #cbd5e1",
+          borderRight: "0.5px solid #e2e8f0", whiteSpace: "nowrap",
+        }}>
+          {hr.charAt(0) + hr.slice(1).toLowerCase()} Total
+        </td>
+        {activeUnits.flatMap((u) => renderUnitCells(u, hr, null, null, style.totalBg))}
+      </tr>,
+    );
+  });
+
+  // Grand total row
+  rows.push(
+    <tr key="total-hours" style={{ background: "#1e293b" }}>
+      <td style={{
+        padding: "7px 10px", fontSize: 12, fontWeight: 700,
+        color: "#f1f5f9", borderBottom: "0.5px solid #334155",
+        borderRight: "0.5px solid #334155", whiteSpace: "nowrap",
+      }}>
+        ▣ Total Downtime
+      </td>
+      {activeUnits.flatMap((unit) => {
+        const cells: ReactNode[] = [];
+        monthlyCols.forEach((mk) => {
+          const v = HR_ORDER.reduce((s, hr) => s + getHours(unit, hr, null, null, mk.label), 0);
+          cells.push(
+            <td key={`${unit.name}-m-${mk.label}`} style={{
+              ...baseCell, background: "#1e293b",
+              color: v === 0 ? "#475569" : "#86efac", fontWeight: 600,
+            }}>
+              {fmtH(v)}
+            </td>,
+          );
+        });
+        const vAll = HR_ORDER.reduce((s, hr) => s + sumHours(unit, hr, null, null, months), 0);
+        cells.push(
+          <td key={`${unit.name}-utd`} style={{
+            ...baseCell, background: "#0f172a",
+            color: vAll === 0 ? "#475569" : "#4ade80",
+            fontWeight: 700, borderRight: "2px solid #334155",
+          }}>
+            {fmtH(vAll)}
+          </td>,
+        );
+        return cells;
+      })}
+    </tr>,
+  );
+
+  const unitHeaderRow = (
+    <tr>
+      <th rowSpan={2} style={{
+        padding: "8px 10px", fontSize: 11, fontWeight: 700,
+        color: "#94a3b8", background: "#0f172a", textAlign: "left",
+        borderBottom: "1px solid #334155", borderRight: "0.5px solid #334155",
+        minWidth: 220, position: "sticky", left: 0, zIndex: 2,
+      }}>
+        Head Reason / Sub Head Reason
+      </th>
+      {activeUnits.map((u) => (
+        <th key={u.name} colSpan={colsPerUnit} style={{
+          padding: "7px 10px", fontSize: 11, fontWeight: 700,
+          color: "#f1f5f9", background: "#1e293b", textAlign: "center",
+          borderBottom: "0.5px solid #334155", borderRight: "2px solid #475569",
+          letterSpacing: "0.04em",
+        }}>
+          {u.name}
+        </th>
+      ))}
+    </tr>
+  );
+
+  const subHeaderRow = (
+    <tr>
+      {activeUnits.map((u) => (
+        <>
+          {monthlyCols.map((mk) => (
+            <th key={`${u.name}-${mk.label}`} style={{
+              padding: "5px 8px", fontSize: 10, fontWeight: 600,
+              color: "#7dd3fc", background: "#1e293b", textAlign: "right",
+              borderBottom: "1px solid #334155", borderRight: "0.5px solid #334155",
+              whiteSpace: "nowrap",
+            }}>
+              {mk.label}
+            </th>
+          ))}
+          <th key={`${u.name}-utd`} style={{
+            padding: "5px 8px", fontSize: 10, fontWeight: 700,
+            color: "#4ade80", background: "#0f172a", textAlign: "right",
+            borderBottom: "1px solid #334155", borderRight: "2px solid #475569",
+            whiteSpace: "nowrap",
+          }}>
+            {lastFy} UTD Total
+          </th>
+        </>
+      ))}
+    </tr>
+  );
+
+  return (
+    <div style={{ marginBottom: 32, border: "0.5px solid #e2e8f0", borderRadius: 8, overflow: "hidden" }}>
+      <div style={{ background: "#0f172a", padding: "10px 14px", display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ fontSize: 10, fontWeight: 700, color: "#64748b", letterSpacing: "0.1em", textTransform: "uppercase" }}>
+          Hours View
+        </span>
+        <span style={{ fontSize: 14, fontWeight: 600, color: "#f1f5f9" }}>{PL[sk]}</span>
+        <span style={{ fontSize: 10, color: "#475569", marginLeft: "auto" }}>
+          Downtime in hours · Click a row to expand / collapse
+        </span>
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ borderCollapse: "collapse", width: "100%", tableLayout: "auto" }}>
+          <thead>
+            {unitHeaderRow}
+            {subHeaderRow}
+          </thead>
+          <tbody>{rows}</tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 // ─── Section Table ────────────────────────────────────────────────────────────
 
 interface SectionTableProps {
@@ -992,6 +1310,20 @@ export default function DowntimeConsolidated(): ReactNode {
             {data && data.activePks.map((sk) => (
               <CrossUnitTable
                 key={`cu-${sk}`} sk={sk}
+                activeUnits={data.activeUnits}
+                activePks={data.activePks}
+                months={data.months}
+                idleMap={data.idleMap}
+                hrMap={data.hrMap}
+                shrMap={data.shrMap}
+                reasonMap={data.reasonMap}
+              />
+            ))}
+          </div>
+          <div id="hoursArea">
+            {data && data.activePks.map((sk) => (
+              <HoursTable
+                key={`hr-${sk}`} sk={sk}
                 activeUnits={data.activeUnits}
                 activePks={data.activePks}
                 months={data.months}
