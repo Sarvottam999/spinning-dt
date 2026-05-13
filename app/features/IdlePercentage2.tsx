@@ -102,6 +102,24 @@ const PL: Record<SectionKey, string> = {
   cs2Furnace:"CS2 Furnace", cs2Plant:"CS2 Plant", wsa:"WSA",
 };
 
+// Section groups for TableHead4Row
+interface SectionGroup {
+  label: string;
+  keys: SectionKey[];
+}
+
+const SECTION_GROUPS: SectionGroup[] = [
+  { label: "Spinning",   keys: ["spinning","dryer","bailingPress"] },
+  { label: "Viscose",    keys: ["simplex","churn","twinRollPress","firstStageGCF","secondStageGCF","thirdStageGCF","rejectGCF","msfe"] },
+  { label: "Chemical",   keys: ["aac","anhydrousEvaporator","acidPlant"] },
+  { label: "CS2",        keys: ["cs2Furnace","cs2Plant","wsa"] },
+];
+
+interface ActiveSection {
+  label: string;
+  activeKeys: SectionKey[];
+}
+
 const SEC_MAP: Record<string, SectionKey> = {
   "SPINNING MACHINE":"spinning","SPINNING":"spinning","SPIN":"spinning",
   "DRYER":"dryer","DRIER":"dryer",
@@ -163,6 +181,12 @@ function parseDate(v: unknown): YM | null {
     if (m2) return { y: +m2[1], m: +m2[2] };
   }
   return null;
+}
+
+function getActiveSections(activePks: SectionKey[]): ActiveSection[] {
+  return SECTION_GROUPS
+    .map(g => ({ label: g.label, activeKeys: g.keys.filter(k => activePks.includes(k)) }))
+    .filter(g => g.activeKeys.length > 0);
 }
 
 // ─── Excel Parser ─────────────────────────────────────────────────────────────
@@ -314,6 +338,432 @@ function fyGroups(months: MonthMeta[]): string[] {
   return [...seen].sort();
 }
 
+// ─── Shared cell styles ───────────────────────────────────────────────────────
+
+const baseCell: CSSProperties = {
+  padding: "5px 8px", fontSize: 11, textAlign: "right",
+  borderBottom: "0.5px solid #e2e8f0", borderRight: "0.5px solid #e2e8f0",
+  whiteSpace: "nowrap", minWidth: 52,
+};
+
+const numCell: CSSProperties = {
+  ...baseCell,
+  fontVariantNumeric: "tabular-nums",
+};
+
+// ─── Copy-to-Excel helper ─────────────────────────────────────────────────────
+
+function copyTableToExcel(tableRef: HTMLTableElement | null, setCopyMsg: (s: string) => void): void {
+  if (!tableRef) return;
+  const rows = tableRef.querySelectorAll("tr");
+  const tsv: string[] = [];
+  rows.forEach((row) => {
+    const cells = row.querySelectorAll("th, td");
+    const parts: string[] = [];
+    cells.forEach((c) => {
+      const span = parseInt(c.getAttribute("colspan") ?? "1", 10);
+      parts.push((c as HTMLElement).innerText.replace(/\n/g, " ").trim());
+      for (let i = 1; i < span; i++) parts.push("");
+    });
+    tsv.push(parts.join("\t"));
+  });
+  navigator.clipboard.writeText(tsv.join("\n")).then(() => {
+    setCopyMsg("Copied!"); setTimeout(() => setCopyMsg(""), 2000);
+  }).catch(() => {
+    setCopyMsg("Failed"); setTimeout(() => setCopyMsg(""), 2000);
+  });
+}
+
+// ─── TableHead4Row ────────────────────────────────────────────────────────────
+// 4-row header: Section Groups | Months... | Section Keys | Unit Name | Plant
+
+interface TableHead4RowProps {
+  months: MonthMeta[];
+  activeSections: ActiveSection[];
+  bgColor: string;   // top group header bg
+  subColor: string;  // section key row bg
+}
+
+function TableHead4Row({ months, activeSections, bgColor, subColor }: TableHead4RowProps): ReactNode {
+  // Layout (matches image exactly):
+  // Col 0: "Unit Name"  rowSpan=4
+  // Col 1: "Plant"      rowSpan=4
+  // Then for each month:
+  //   Row 1: month label   (colspan = total keys across all sections in that month)
+  //   Row 2: days label    (colspan = same)
+  //   Row 3: section group (colspan = activeKeys.length per section)
+  //   Row 4: key labels    (one per key)
+
+  const keysPerMonth = activeSections.reduce((s, sec) => s + sec.activeKeys.length, 0);
+
+  const thBase = (extra?: CSSProperties): CSSProperties => ({
+    padding: "5px 8px", fontSize: 11, textAlign: "center", fontWeight: 600,
+    borderBottom: "0.5px solid #cbd5e1", borderRight: "0.5px solid #cbd5e1",
+    whiteSpace: "nowrap",
+    ...extra,
+  });
+
+  return (
+    <thead>
+      {/* Row 1: Unit Name | Plant | Month labels */}
+      <tr>
+        <th rowSpan={4} style={thBase({ textAlign: "left", fontWeight: 700, background: bgColor, color: "#1e293b", minWidth: 80, borderRight: "0.5px solid #cbd5e1", verticalAlign: "middle" })}>
+          Unit Name
+        </th>
+        <th rowSpan={4} style={thBase({ fontWeight: 600, background: bgColor, color: "#6b7280", minWidth: 60, borderRight: "1px solid #94a3b8", verticalAlign: "middle" })}>
+          Plant
+        </th>
+        {months.map((mk, mi) => (
+          <th key={mk.label} colSpan={keysPerMonth} style={thBase({
+            background: bgColor, color: "#1e293b", fontWeight: 700, fontSize: 12,
+            borderRight: mi < months.length - 1 ? "1px solid #94a3b8" : "0.5px solid #cbd5e1",
+          })}>
+            {mk.label}
+          </th>
+        ))}
+      </tr>
+      {/* Row 2: Days count per month */}
+      <tr>
+        {months.map((mk, mi) => (
+          <th key={mk.label} colSpan={keysPerMonth} style={thBase({
+            background: bgColor, color: "#475569", fontWeight: 500, fontSize: 10,
+            borderRight: mi < months.length - 1 ? "1px solid #94a3b8" : "0.5px solid #cbd5e1",
+          })}>
+            {mk.days} Days
+          </th>
+        ))}
+      </tr>
+      {/* Row 3: Section group names (per month block) */}
+      <tr>
+        {months.map((mk, mi) =>
+          activeSections.map((sec, si) => (
+            <th key={`${mk.label}-${sec.label}`} colSpan={sec.activeKeys.length} style={thBase({
+              background: subColor, color: "#374151", fontWeight: 600, fontSize: 10,
+              borderRight: (si < activeSections.length - 1)
+                ? "0.5px solid #cbd5e1"
+                : mi < months.length - 1 ? "1px solid #94a3b8" : "0.5px solid #cbd5e1",
+            })}>
+              {sec.label}
+            </th>
+          ))
+        )}
+      </tr>
+      {/* Row 4: Individual key labels */}
+      <tr>
+        {months.map((mk, mi) =>
+          activeSections.flatMap((sec, si) =>
+            sec.activeKeys.map((k, ki) => (
+              <th key={`${mk.label}-${k}`} style={thBase({
+                background: subColor, color: "#374151", fontWeight: 500, fontSize: 10,
+                borderBottom: "1px solid #94a3b8",
+                borderRight: (si === activeSections.length - 1 && ki === sec.activeKeys.length - 1)
+                  ? mi < months.length - 1 ? "1px solid #94a3b8" : "0.5px solid #cbd5e1"
+                  : "0.5px solid #cbd5e1",
+              })}>
+                {PL[k]}
+              </th>
+            ))
+          )
+        )}
+      </tr>
+    </thead>
+  );
+}
+
+// ─── Summary Table Wrapper ────────────────────────────────────────────────────
+
+interface SummaryTableWrapperProps {
+  title: string;
+  badge: string;
+  badgeBg: string;
+  tableId: string;
+  children: ReactNode;
+}
+
+function SummaryTableWrapper({ title, badge, badgeBg, tableId, children }: SummaryTableWrapperProps): ReactNode {
+  const [copyMsg, setCopyMsg] = useState("");
+
+  const handleCopy = (): void => {
+    const tbl = document.querySelector<HTMLTableElement>(`#${tableId} table`);
+    copyTableToExcel(tbl, setCopyMsg);
+  };
+
+  return (
+    <div style={{ marginBottom: 20, border: "0.5px solid #e2e8f0", borderRadius: 8, overflow: "hidden" }}>
+      <div style={{
+        background: "#f8fafc", padding: "8px 14px",
+        display: "flex", alignItems: "center", gap: 8,
+        borderBottom: "0.5px solid #e2e8f0",
+      }}>
+        <span style={{
+          fontSize: 10, fontWeight: 700, color: "#fff",
+          background: badgeBg, padding: "2px 8px", borderRadius: 3,
+          letterSpacing: "0.06em",
+        }}>
+          {badge}
+        </span>
+        <span style={{ fontSize: 13, fontWeight: 600, color: "#1e293b" }}>{title}</span>
+        <button
+          onClick={handleCopy}
+          style={{
+            marginLeft: "auto", fontSize: 11, padding: "3px 12px",
+            background: copyMsg ? "#059669" : "#1e293b",
+            border: "none", borderRadius: 4, color: "#f1f5f9",
+            cursor: "pointer", fontWeight: 500, transition: "background 0.2s",
+          }}
+        >
+          {copyMsg || "📋 Copy to Excel"}
+        </button>
+      </div>
+      <div id={tableId} style={{ overflowX: "auto", marginBottom: 0 }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ─── Machine Count Table ──────────────────────────────────────────────────────
+
+interface MachineCountTableProps {
+  activePks:   SectionKey[];
+  activeUnits: Unit[];
+  months:      MonthMeta[];
+}
+
+function MachineCountTable({ activePks, activeUnits, months }: MachineCountTableProps): ReactNode {
+  if (!activePks.length || !months.length) return null;
+  const activeSecs = getActiveSections(activePks);
+
+  return (
+    <SummaryTableWrapper
+      title="Machine Count"
+      badge="MC"
+      badgeBg="#3b82f6"
+      tableId="mcTable"
+    >
+      <table style={{ borderCollapse: "collapse" }}>
+        <TableHead4Row months={months} activeSections={activeSecs} bgColor="#dbeafe" subColor="#bfdbfe" />
+        <tbody>
+          {activeUnits.map((u, i) => (
+            <tr key={u.name} style={{ background: i % 2 === 1 ? "#f8fafc" : "#fff" }}>
+              <td style={{ ...baseCell, textAlign: "left", fontWeight: 600 }}>{u.name}</td>
+              <td style={{ ...numCell, textAlign: "center", color: "#6b7280" }}>{u.plant}</td>
+              {months.map(mk =>
+                activeSecs.flatMap(s => s.activeKeys.map(k => {
+                  const v = MC[u.name]?.[k] ?? 0;
+                  return (
+                    <td key={`${mk.label}-${k}`} style={{ ...numCell, color: v === 0 ? "#d1d5db" : "#111" }}>
+                      {v === 0 ? "-" : v}
+                    </td>
+                  );
+                }))
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </SummaryTableWrapper>
+  );
+}
+
+// ─── Total Hrs Table ──────────────────────────────────────────────────────────
+
+interface TotalHrsTableProps {
+  activePks:   SectionKey[];
+  activeUnits: Unit[];
+  months:      MonthMeta[];
+}
+
+function TotalHrsTable({ activePks, activeUnits, months }: TotalHrsTableProps): ReactNode {
+  if (!activePks.length || !months.length) return null;
+  const activeSecs = getActiveSections(activePks);
+
+  return (
+    <SummaryTableWrapper
+      title="Total Available Hours  (MC × Days × 24)"
+      badge="TOTAL HRS"
+      badgeBg="#6366f1"
+      tableId="totalHrsTable"
+    >
+      <table style={{ borderCollapse: "collapse" }}>
+        <TableHead4Row months={months} activeSections={activeSecs} bgColor="#dce6f1" subColor="#bdd7ee" />
+        <tbody>
+          {activeUnits.map((u, i) => (
+            <tr key={u.name} style={{ background: i % 2 === 1 ? "#f8fafc" : "#fff" }}>
+              <td style={{ ...baseCell, textAlign: "left", fontWeight: 600 }}>{u.name}</td>
+              <td style={{ ...numCell, textAlign: "center", color: "#6b7280" }}>{u.plant}</td>
+              {months.map(mk =>
+                activeSecs.flatMap(s => s.activeKeys.map(k => {
+                  const total = (MC[u.name]?.[k] ?? 0) * mk.days * 24;
+                  return (
+                    <td key={`${mk.label}-${k}`} style={{ ...numCell, color: total === 0 ? "#d1d5db" : "#111" }}>
+                      {total === 0 ? "-" : total}
+                    </td>
+                  );
+                }))
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </SummaryTableWrapper>
+  );
+}
+
+// ─── Idle Hrs Table ───────────────────────────────────────────────────────────
+
+interface IdleHrsTableProps {
+  activePks:   SectionKey[];
+  activeUnits: Unit[];
+  months:      MonthMeta[];
+  idleMap:     HrMap;
+}
+
+function IdleHrsTable({ activePks, activeUnits, months, idleMap }: IdleHrsTableProps): ReactNode {
+  if (!activePks.length || !months.length) return null;
+  const activeSecs = getActiveSections(activePks);
+
+  return (
+    <SummaryTableWrapper
+      title="Idle Hours"
+      badge="IDLE HRS"
+      badgeBg="#f97316"
+      tableId="idleHrsTable"
+    >
+      <table style={{ borderCollapse: "collapse" }}>
+        <TableHead4Row months={months} activeSections={activeSecs} bgColor="#fce4d6" subColor="#f4b183" />
+        <tbody>
+          {activeUnits.map((u, i) => (
+            <tr key={u.name} style={{ background: i % 2 === 1 ? "#f8fafc" : "#fff" }}>
+              <td style={{ ...baseCell, textAlign: "left", fontWeight: 600 }}>{u.name}</td>
+              <td style={{ ...numCell, textAlign: "center", color: "#6b7280" }}>{u.plant}</td>
+              {months.map(mk =>
+                activeSecs.flatMap(s => s.activeKeys.map(k => {
+                  const v = (idleMap[u.plant]?.[k]?.[mk.label] as number | undefined) ?? 0;
+                  return (
+                    <td key={`${mk.label}-${k}`} style={{ ...numCell, color: v === 0 ? "#d1d5db" : "#111" }}>
+                      {v === 0 ? "-" : trunc3(v)}
+                    </td>
+                  );
+                }))
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </SummaryTableWrapper>
+  );
+}
+
+// ─── Remaining Hrs Table ──────────────────────────────────────────────────────
+
+interface RemainingHrsTableProps {
+  activePks:   SectionKey[];
+  activeUnits: Unit[];
+  months:      MonthMeta[];
+  idleMap:     HrMap;
+}
+
+function RemainingHrsTable({ activePks, activeUnits, months, idleMap }: RemainingHrsTableProps): ReactNode {
+  if (!activePks.length || !months.length) return null;
+  const activeSecs = getActiveSections(activePks);
+
+  return (
+    <SummaryTableWrapper
+      title="Remaining Hours  (Total − Idle)"
+      badge="REM HRS"
+      badgeBg="#ea580c"
+      tableId="remHrsTable"
+    >
+      <table style={{ borderCollapse: "collapse" }}>
+        <TableHead4Row months={months} activeSections={activeSecs} bgColor="#fdf3ee" subColor="#f9cdb0" />
+        <tbody>
+          {activeUnits.map((u, i) => (
+            <tr key={u.name} style={{ background: i % 2 === 1 ? "#f8fafc" : "#fff" }}>
+              <td style={{ ...baseCell, textAlign: "left", fontWeight: 600 }}>{u.name}</td>
+              <td style={{ ...numCell, textAlign: "center", color: "#6b7280" }}>{u.plant}</td>
+              {months.map(mk =>
+                activeSecs.flatMap(s => s.activeKeys.map(k => {
+                  const mc        = MC[u.name]?.[k] ?? 0;
+                  const total     = mc * mk.days * 24;
+                  const idleDown  = (idleMap[u.plant]?.[k]?.[mk.label] as number | undefined) ?? 0;
+                  const remaining = total - idleDown;
+                  const isNeg     = remaining < 0;
+                  return (
+                    <td key={`${mk.label}-${k}`} style={{
+                      ...numCell,
+                      color: total === 0 ? "#d1d5db" : isNeg ? "#dc2626" : "#111",
+                      fontWeight: isNeg ? 700 : "normal",
+                    }}>
+                      {total === 0 ? "-" : trunc3(remaining)}
+                    </td>
+                  );
+                }))
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </SummaryTableWrapper>
+  );
+}
+
+// ─── Pct Idle Table ───────────────────────────────────────────────────────────
+
+interface PctIdleTableProps {
+  activePks:   SectionKey[];
+  activeUnits: Unit[];
+  months:      MonthMeta[];
+  idleMap:     HrMap;
+}
+
+function PctIdleTable({ activePks, activeUnits, months, idleMap }: PctIdleTableProps): ReactNode {
+  if (!activePks.length || !months.length) return null;
+  const activeSecs = getActiveSections(activePks);
+
+  return (
+    <SummaryTableWrapper
+      title="% Idle  (Idle ÷ Remaining × 100)"
+      badge="% IDLE"
+      badgeBg="#dc2626"
+      tableId="pctIdleTable"
+    >
+      <table style={{ borderCollapse: "collapse" }}>
+        <TableHead4Row months={months} activeSections={activeSecs} bgColor="#fce9df" subColor="#f7c4a0" />
+        <tbody>
+          {activeUnits.map((u, i) => (
+            <tr key={u.name} style={{ background: i % 2 === 1 ? "#f8fafc" : "#fff" }}>
+              <td style={{ ...baseCell, textAlign: "left", fontWeight: 600 }}>{u.name}</td>
+              <td style={{ ...numCell, textAlign: "center", color: "#6b7280" }}>{u.plant}</td>
+              {months.map(mk =>
+                activeSecs.flatMap(s => s.activeKeys.map(k => {
+                  const mc        = MC[u.name]?.[k] ?? 0;
+                  const total     = mc * mk.days * 24;
+                  const idleDown  = (idleMap[u.plant]?.[k]?.[mk.label] as number | undefined) ?? 0;
+                  const remaining = total - idleDown;
+                  const pct       = total === 0 || remaining === 0 || idleDown === 0
+                    ? null
+                    : (idleDown / remaining) * 100;
+                  const isHigh    = pct !== null && pct > 100;
+                  return (
+                    <td key={`${mk.label}-${k}`} style={{
+                      ...numCell,
+                      color: pct === null ? "#d1d5db" : isHigh ? "#dc2626" : "#111",
+                      fontWeight: isHigh ? 700 : "normal",
+                    }}>
+                      {pct === null ? "-" : `${Math.trunc(pct * 1000) / 1000}%`}
+                    </td>
+                  );
+                }))
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </SummaryTableWrapper>
+  );
+}
+
 // ─── Cross-Unit Table (with expandable drill-down) ────────────────────────────
 
 interface CrossUnitTableProps {
@@ -330,7 +780,6 @@ interface CrossUnitTableProps {
 function CrossUnitTable({
   sk, activeUnits, activePks, months, idleMap, hrMap, shrMap, reasonMap,
 }: CrossUnitTableProps): ReactNode {
-  // Default: all HR and SHR rows expanded
   const initHR = new Set<string>(HR_ORDER);
   const initSHR = (): Set<string> => {
     const s = new Set<string>();
@@ -405,14 +854,14 @@ function CrossUnitTable({
     return v > 100 ? `⚠${s} %` : `${s} %`;
   };
 
-  const baseCell: CSSProperties = {
+  const cuBaseCell: CSSProperties = {
     padding: "5px 8px", fontSize: 11, textAlign: "right",
     borderBottom: "0.5px solid #e2e8f0", borderRight: "0.5px solid #e2e8f0",
     whiteSpace: "nowrap", minWidth: 52,
   };
 
   const valStyle = (v: number | null, bg?: string): CSSProperties => ({
-    ...baseCell,
+    ...cuBaseCell,
     background: bg ?? "transparent",
     color: v === null ? "#cbd5e1" : v > 100 ? "#dc2626" : v > 10 ? "#b45309" : "#1e293b",
     fontWeight: v !== null && v > 0 ? 500 : 400,
@@ -425,7 +874,6 @@ function CrossUnitTable({
     OTHERS:    Object.keys(shrMap["OTHERS"]    ?? {}).sort(),
   };
 
-  // Render monthly + UTD cells for a given unit/hr/shr/rd combo
   const renderUnitCells = (
     unit: Unit,
     hr: HeadReason,
@@ -455,19 +903,13 @@ function CrossUnitTable({
     const hrOpen  = expandedHR.has(hr);
     if (shrs.length === 0) return;
 
-    // ── HR header row (clickable) ──────────────────────────────────────────
     rows.push(
-      <tr
-        key={`hr-hdr-${hr}`}
-        style={{ cursor: "pointer" }}
-        onClick={() => toggleHR(hr)}
-      >
+      <tr key={`hr-hdr-${hr}`} style={{ cursor: "pointer" }} onClick={() => toggleHR(hr)}>
         <td style={{
           padding: "6px 10px", fontSize: 11, fontWeight: 700,
           background: style.headerBg, color: style.headerText,
           borderBottom: "0.5px solid #e2e8f0", borderRight: "0.5px solid #e2e8f0",
-          letterSpacing: "0.06em",
-          userSelect: "none",
+          letterSpacing: "0.06em", userSelect: "none",
         }}>
           {hr}
         </td>
@@ -488,7 +930,6 @@ function CrossUnitTable({
       const shrOpen = expandedSHR.has(shrKey);
       const rds     = Object.keys(reasonMap[hr]?.[shr] ?? {}).sort();
 
-      // ── SHR row (clickable if has reason descriptions) ─────────────────
       rows.push(
         <tr
           key={`shr-${hr}-${shr}`}
@@ -498,8 +939,7 @@ function CrossUnitTable({
           <td style={{
             padding: "5px 10px 5px 22px", fontSize: 11, fontWeight: 400,
             color: "#374151", borderBottom: "0.5px solid #e2e8f0",
-            borderRight: "0.5px solid #e2e8f0", whiteSpace: "nowrap",
-            userSelect: "none",
+            borderRight: "0.5px solid #e2e8f0", whiteSpace: "nowrap", userSelect: "none",
           }}>
             <span style={{
               width: 5, height: 5, borderRadius: "50%", background: "#94a3b8",
@@ -511,7 +951,6 @@ function CrossUnitTable({
         </tr>,
       );
 
-      // ── Reason Description rows (shown when SHR expanded) ──────────────
       if (shrOpen && rds.length > 0) {
         rds.forEach((rd) => {
           rows.push(
@@ -534,7 +973,6 @@ function CrossUnitTable({
       }
     });
 
-    // ── HR total row ────────────────────────────────────────────────────────
     rows.push(
       <tr key={`hr-total-${hr}`} style={{ background: style.totalBg }}>
         <td style={{
@@ -549,7 +987,6 @@ function CrossUnitTable({
     );
   });
 
-  // ── Grand Total row ─────────────────────────────────────────────────────────
   rows.push(
     <tr key="total-downtime" style={{ background: "#1e293b" }}>
       <td style={{
@@ -583,7 +1020,7 @@ function CrossUnitTable({
           const v = toPctTotal([mk]);
           cells.push(
             <td key={`${unit.name}-m-${mk.label}`} style={{
-              ...baseCell, background: "#1e293b",
+              ...cuBaseCell, background: "#1e293b",
               color: v === null ? "#475569" : v > 100 ? "#fca5a5" : "#86efac",
               fontWeight: 600,
             }}>
@@ -595,7 +1032,7 @@ function CrossUnitTable({
         const vAll = toPctTotal(months);
         cells.push(
           <td key={`${unit.name}-utd`} style={{
-            ...baseCell, background: "#0f172a",
+            ...cuBaseCell, background: "#0f172a",
             color: vAll === null ? "#475569" : vAll > 100 ? "#fca5a5" : "#4ade80",
             fontWeight: 700, borderRight: "2px solid #334155",
           }}>
@@ -683,7 +1120,7 @@ function CrossUnitTable({
   );
 }
 
-// ─── Hours Table (raw downtime hours, same drill-down as CrossUnitTable) ──────
+// ─── Hours Table ──────────────────────────────────────────────────────────────
 
 interface HoursTableProps {
   sk:          SectionKey;
@@ -726,7 +1163,6 @@ function HoursTable({
   const monthlyCols = months;
   const colsPerUnit = monthlyCols.length + 1;
 
-  // Raw hours lookup — same shape as CrossUnitTable getMonthDown
   const getHours = (
     unit: Unit,
     hr: HeadReason,
@@ -753,14 +1189,14 @@ function HoursTable({
 
   const fmtH = (v: number): string => v === 0 ? "-" : v.toFixed(2);
 
-  const baseCell: CSSProperties = {
+  const htBaseCell: CSSProperties = {
     padding: "5px 8px", fontSize: 11, textAlign: "right",
     borderBottom: "0.5px solid #e2e8f0", borderRight: "0.5px solid #e2e8f0",
     whiteSpace: "nowrap", minWidth: 52,
   };
 
   const valStyle = (v: number, bg?: string): CSSProperties => ({
-    ...baseCell,
+    ...htBaseCell,
     background: bg ?? "transparent",
     color: v === 0 ? "#cbd5e1" : "#1e293b",
     fontWeight: v > 0 ? 500 : 400,
@@ -785,12 +1221,10 @@ function HoursTable({
       const v = getHours(unit, hr, shr, rd, mk.label);
       cells.push(<td key={`${unit.name}-m-${mk.label}`} style={valStyle(v, rowBg)}>{fmtH(v)}</td>);
     });
-    // UTD = sum across all months
     const vAll = sumHours(unit, hr, shr, rd, months);
     cells.push(
       <td key={`${unit.name}-utd`} style={{
-        ...valStyle(vAll, rowBg),
-        fontWeight: 700, borderRight: "2px solid #cbd5e1",
+        ...valStyle(vAll, rowBg), fontWeight: 700, borderRight: "2px solid #cbd5e1",
       }}>
         {fmtH(vAll)}
       </td>,
@@ -889,7 +1323,6 @@ function HoursTable({
     );
   });
 
-  // Grand total row
   rows.push(
     <tr key="total-hours" style={{ background: "#1e293b" }}>
       <td style={{
@@ -905,7 +1338,7 @@ function HoursTable({
           const v = HR_ORDER.reduce((s, hr) => s + getHours(unit, hr, null, null, mk.label), 0);
           cells.push(
             <td key={`${unit.name}-m-${mk.label}`} style={{
-              ...baseCell, background: "#1e293b",
+              ...htBaseCell, background: "#1e293b",
               color: v === 0 ? "#475569" : "#86efac", fontWeight: 600,
             }}>
               {fmtH(v)}
@@ -915,7 +1348,7 @@ function HoursTable({
         const vAll = HR_ORDER.reduce((s, hr) => s + sumHours(unit, hr, null, null, months), 0);
         cells.push(
           <td key={`${unit.name}-utd`} style={{
-            ...baseCell, background: "#0f172a",
+            ...htBaseCell, background: "#0f172a",
             color: vAll === 0 ? "#475569" : "#4ade80",
             fontWeight: 700, borderRight: "2px solid #334155",
           }}>
@@ -1304,7 +1737,53 @@ export default function DowntimeConsolidated(): ReactNode {
           </div>
         )}
 
-        {/* Cross-Unit tables first, then Original Section tables */}
+        {/* ── Summary tables at the TOP ────────────────────────────────────── */}
+        {data && (
+          <div id="summaryArea" style={{ marginBottom: 32 }}>
+            <div style={{
+              fontSize: 11, fontWeight: 700, color: "#94a3b8",
+              letterSpacing: "0.12em", textTransform: "uppercase",
+              marginBottom: 12, paddingLeft: 2,
+            }}>
+              Summary Tables
+            </div>
+
+            <MachineCountTable
+              activePks={data.activePks}
+              activeUnits={data.activeUnits}
+              months={data.months}
+            />
+
+            <TotalHrsTable
+              activePks={data.activePks}
+              activeUnits={data.activeUnits}
+              months={data.months}
+            />
+
+            <IdleHrsTable
+              activePks={data.activePks}
+              activeUnits={data.activeUnits}
+              months={data.months}
+              idleMap={data.idleMap}
+            />
+
+            <RemainingHrsTable
+              activePks={data.activePks}
+              activeUnits={data.activeUnits}
+              months={data.months}
+              idleMap={data.idleMap}
+            />
+
+            <PctIdleTable
+              activePks={data.activePks}
+              activeUnits={data.activeUnits}
+              months={data.months}
+              idleMap={data.idleMap}
+            />
+          </div>
+        )}
+
+        {/* ── Detail tables below ──────────────────────────────────────────── */}
         <div id="tableArea">
           <div id="crossUnitArea">
             {data && data.activePks.map((sk) => (
